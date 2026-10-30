@@ -2,13 +2,17 @@ import { createClient } from "npm:@supabase/supabase-js@2.118.0"
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || ""
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || ""
+const DEFAULT_WEB_URL = "https://project-curit.github.io/curit-qr-web"
 const PUBLIC_WEB_URL = (
-  Deno.env.get("PUBLIC_WEB_URL") || "http://localhost:5173"
+  Deno.env.get("PUBLIC_WEB_URL") || DEFAULT_WEB_URL
 ).replace(/\/$/, "")
 const PAYMENT_MODE = Deno.env.get("PAYMENT_MODE") === "toss" ? "toss" : "demo"
 const TOSS_CLIENT_KEY = Deno.env.get("TOSS_CLIENT_KEY") || ""
 const TOSS_SECRET_KEY = Deno.env.get("TOSS_SECRET_KEY") || ""
-const origins = (Deno.env.get("WEB_ORIGIN") || "http://localhost:5173")
+const origins = (
+  Deno.env.get("WEB_ORIGIN") ||
+  `${DEFAULT_WEB_URL},http://localhost:5173,http://localhost:8082`
+)
   .split(",")
   .map((value) => value.trim())
   .filter(Boolean)
