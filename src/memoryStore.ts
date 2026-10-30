@@ -8,7 +8,10 @@ import {
 } from "./domain.js"
 import type { SeedListing } from "./seeds.js"
 
-type StoredOrder = Order & { customerPhone: string; createdAt: number }
+type StoredOrder = Order & {
+  customerPhone: string
+  createdAt: number
+}
 
 function clone<T>(value: T): T {
   return structuredClone(value)
@@ -17,13 +20,14 @@ function clone<T>(value: T): T {
 export class MemoryStore implements CommerceStore {
   private readonly listings = new Map<string, QrSnapshot>()
   private readonly orders = new Map<string, StoredOrder>()
-  private readonly sessions = new Map<
-    string,
-    { customerPhone: string; expiresAt: number }
-  >()
+  private readonly sessions = new Map<string, {
+    customerPhone: string
+    expiresAt: number
+  }>()
 
   constructor(seeds: SeedListing[]) {
-    for (const seed of seeds) this.listings.set(seed.token, clone(seed.snapshot))
+    for (const seed of seeds)
+      this.listings.set(seed.token, clone(seed.snapshot))
   }
 
   async getListing(qrToken: string) {
@@ -48,6 +52,11 @@ export class MemoryStore implements CommerceStore {
   }
 
   async createOrder(input: CreateOrderInput) {
+    const order = await this.prepareOrder(input)
+    return this.confirmOrder(order.id, "demo", input.customerPhone)
+  }
+
+  async prepareOrder(input: CreateOrderInput) {
     const listing = this.listings.get(input.qrToken)
     if (!listing) {
       throw new DomainError(
@@ -64,7 +73,11 @@ export class MemoryStore implements CommerceStore {
       )
     }
     if (!Number.isSafeInteger(input.quantity) || input.quantity < 1) {
-      throw new DomainError("주문 수량을 확인해 주세요.", 400, "INVALID_QUANTITY")
+      throw new DomainError(
+        "주문 수량을 확인해 주세요.",
+        400,
+        "INVALID_QUANTITY",
+      )
     }
     if (listing.product.stock < input.quantity) {
       throw new DomainError(
@@ -75,11 +88,10 @@ export class MemoryStore implements CommerceStore {
     }
 
     const orderSnapshot = clone(listing)
-    listing.product.stock -= input.quantity
     const order: StoredOrder = {
       v: 1,
       id: "QR-" + randomUUID(),
-      status: "paid",
+      status: "pending",
       simulated: input.simulated,
       artworkId: listing.product.artworkId,
       quantity: input.quantity,
@@ -100,9 +112,54 @@ export class MemoryStore implements CommerceStore {
     return clone(order)
   }
 
+  async getOrderForPayment(orderId: string, customerPhone: string) {
+    const order = this.orders.get(orderId)
+    return order?.customerPhone === customerPhone ? clone(order) : null
+  }
+
+  async confirmOrder(
+    orderId: string,
+    _paymentKey: string,
+    customerPhone: string,
+  ) {
+    const order = this.orders.get(orderId)
+    if (!order || order.customerPhone !== customerPhone)
+      throw new DomainError(
+        "주문 내역을 찾지 못했어요.",
+        404,
+        "ORDER_NOT_FOUND",
+      )
+    if (order.status === "paid") return clone(order)
+    if (order.status !== "pending")
+      throw new DomainError(
+        "결제할 수 없는 주문입니다.",
+        409,
+        "ORDER_NOT_PENDING",
+      )
+    const listing = this.listings.get(order.snapshot.qrToken)
+    if (!listing || listing.product.stock < order.quantity)
+      throw new DomainError(
+        "남은 재고보다 주문 수량이 많아요.",
+        409,
+        "INSUFFICIENT_STOCK",
+      )
+    listing.product.stock -= order.quantity
+    order.status = "paid"
+    return clone(order)
+  }
+
+  async cancelOrder(orderId: string, customerPhone: string) {
+    const order = this.orders.get(orderId)
+    if (order?.customerPhone === customerPhone && order.status === "pending")
+      order.status = "cancelled"
+  }
+
   async listOrders(customerPhone: string) {
     return [...this.orders.values()]
-      .filter((order) => order.customerPhone === customerPhone)
+      .filter(
+        (order) =>
+          order.customerPhone === customerPhone && order.status === "paid",
+      )
       .sort((a, b) => b.createdAt - a.createdAt)
       .map((order) => clone(order))
   }

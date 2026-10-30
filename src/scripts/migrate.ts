@@ -1,5 +1,5 @@
 import "dotenv/config"
-import { readFile } from "node:fs/promises"
+import { readdir, readFile } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
 import postgres from "postgres"
 
@@ -10,9 +10,17 @@ const sql = postgres(databaseUrl, {
   max: 1,
   ssl: databaseUrl.includes("localhost") ? false : "require",
 })
-const migrationUrl = new URL("../../migrations/001_initial.sql", import.meta.url)
-const migration = await readFile(fileURLToPath(migrationUrl), "utf8")
+const migrationsUrl = new URL("../../migrations/", import.meta.url)
+const files = (await readdir(fileURLToPath(migrationsUrl)))
+  .filter((file) => /^\d+_[a-z0-9_-]+\.sql$/i.test(file))
+  .sort()
 
-await sql.unsafe(migration)
+for (const file of files) {
+  const migration = await readFile(
+    fileURLToPath(new URL(file, migrationsUrl)),
+    "utf8",
+  )
+  await sql.unsafe(migration)
+  console.log(`Applied migrations/${file}`)
+}
 await sql.end()
-console.log("Applied migrations/001_initial.sql")

@@ -17,7 +17,12 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
       - run: pnpm install --frozen-lockfile
+      - run: pnpm format:check
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
+      - run: deno check --allow-import supabase/functions/commerce/index.ts

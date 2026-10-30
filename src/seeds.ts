@@ -26,8 +26,7 @@ const common = {
     name: "김서연",
     handle: "@soyeon_craft",
     introduction: "제주 자연에서 영감을 받은 도예 작가",
-    description:
-      "조금씩 다른 손자국과 유약의 흐름을 작품의 일부로 남깁니다.",
+    description: "조금씩 다른 손자국과 유약의 흐름을 작품의 일부로 남깁니다.",
     categories: ["도예", "세라믹", "생활공예"],
     regions: ["제주", "서울"],
   },
@@ -71,7 +70,8 @@ export const seedListings: SeedListing[] = [
         price: 82000,
         stock: 6,
         image: "/artworks/bowl-set.jpg",
-        description: "밥과 국, 디저트까지 편안하게 담을 수 있는 2인 볼 세트입니다.",
+        description:
+          "밥과 국, 디저트까지 편안하게 담을 수 있는 2인 볼 세트입니다.",
         composition: "세라믹 볼 2개",
         care: "급격한 온도 변화와 강한 충격을 피해주세요.",
         pickupMode: "immediate",

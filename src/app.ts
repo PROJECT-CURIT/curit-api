@@ -11,6 +11,7 @@ import {
   type CreateOrderInput,
 } from "./domain.js"
 import { assertQrToken } from "./token.js"
+import { cancelTossPayment, confirmTossPayment, TossError } from "./toss.js"
 
 const SESSION_COOKIE = "curit_session"
 const PHONE_PATTERN = /^01[016789]\d{7,8}$/
@@ -22,10 +23,14 @@ type BuildAppOptions = {
 }
 
 async function sessionPhone(request: FastifyRequest, store: CommerceStore) {
-  const value = request.cookies[SESSION_COOKIE]
+  const authorization = request.headers.authorization
+  const bearer = authorization?.match(/^Bearer ([A-Za-z0-9_-]{32,128})$/)?.[1]
+  const value = bearer || request.cookies[SESSION_COOKIE]
   if (!value) return ""
+  if (bearer) return (await store.getSessionPhone(bearer)) || ""
   const unsigned = request.unsignCookie(value)
-  if (!unsigned.valid || !/^[A-Za-z0-9_-]{32,128}$/.test(unsigned.value)) return ""
+  if (!unsigned.valid || !/^[A-Za-z0-9_-]{32,128}$/.test(unsigned.value))
+    return ""
   return (await store.getSessionPhone(unsigned.value)) || ""
 }
 
@@ -33,12 +38,18 @@ function paymentLabel(body: Record<string, unknown>) {
   if (body.paymentMethod === "card") {
     const issuer = String(body.cardIssuer || "")
     const installment = String(body.installment || "0")
-    return `${issuer || "선택"}카드 · ${installment === "0" ? "일시불" : installment + "개월"}`
+    return `${issuer || "선택"}카드 · ${
+      installment === "0" ? "일시불" : installment + "개월"
+    }`
   }
   return body.paymentMethod === "kakaopay" ? "카카오페이" : "토스페이"
 }
 
-export async function buildApp({ config, store, logger = false }: BuildAppOptions) {
+export async function buildApp({
+  config,
+  store,
+  logger = false,
+}: BuildAppOptions) {
   const app = Fastify({ logger, trustProxy: true })
   const allowedWebOrigins = config.webOrigin
     .split(",")
@@ -66,7 +77,9 @@ export async function buildApp({ config, store, logger = false }: BuildAppOption
         params: {
           type: "object",
           required: ["token"],
-          properties: { token: { type: "string", minLength: 12, maxLength: 128 } },
+          properties: {
+            token: { type: "string", minLength: 12, maxLength: 128 },
+          },
         },
       },
       config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
@@ -80,7 +93,9 @@ export async function buildApp({ config, store, logger = false }: BuildAppOption
       }
       const listing = await store.getListing(token)
       if (!listing) {
-        return reply.code(404).send({ message: "QR에 연결된 상품을 찾을 수 없어요." })
+        return reply
+          .code(404)
+          .send({ message: "QR에 연결된 상품을 찾을 수 없어요." })
       }
       return reply.header("Cache-Control", "no-store").send(listing)
     },
@@ -91,7 +106,13 @@ export async function buildApp({ config, store, logger = false }: BuildAppOption
     return phone ? { verified: true, phone } : { verified: false }
   })
 
-  app.post<{ Body: { phone: string; consent: boolean; remember?: boolean } }>(
+  app.post<{
+    Body: {
+      phone: string
+      consent: boolean
+      remember?: boolean
+    }
+  }>(
     "/api/auth/identity/start",
     {
       schema: {
@@ -128,13 +149,18 @@ export async function buildApp({ config, store, logger = false }: BuildAppOption
         verified: true,
         phone: request.body.phone,
         simulated: true,
+        accessToken: sessionToken,
+        expiresIn: maxAge,
       })
     },
   )
 
   app.get("/api/orders", async (request, reply) => {
     const phone = await sessionPhone(request, store)
-    if (!phone) return reply.code(401).send({ message: "휴대폰 번호를 다시 확인해 주세요." })
+    if (!phone)
+      return reply
+        .code(401)
+        .send({ message: "휴대폰 번호를 다시 확인해 주세요." })
     return { orders: await store.listOrders(phone) }
   })
 
@@ -142,9 +168,13 @@ export async function buildApp({ config, store, logger = false }: BuildAppOption
     "/api/orders/:id",
     async (request, reply) => {
       const phone = await sessionPhone(request, store)
-      if (!phone) return reply.code(401).send({ message: "휴대폰 번호를 다시 확인해 주세요." })
+      if (!phone)
+        return reply
+          .code(401)
+          .send({ message: "휴대폰 번호를 다시 확인해 주세요." })
       const order = await store.getOrder(request.params.id, phone)
-      if (!order) return reply.code(404).send({ message: "주문 내역을 찾지 못했어요." })
+      if (!order)
+        return reply.code(404).send({ message: "주문 내역을 찾지 못했어요." })
       return order
     },
   )
@@ -169,41 +199,146 @@ export async function buildApp({ config, store, logger = false }: BuildAppOption
     },
     async (request, reply) => {
       const phone = await sessionPhone(request, store)
-      if (!phone) return reply.code(401).send({ message: "휴대폰 번호를 다시 확인해 주세요." })
-      if (config.paymentMode === "toss") {
-        return reply.code(503).send({
-          message:
-            "실결제 상점 키 연결 전입니다. 데모 환경에서는 PAYMENT_MODE=demo를 사용해 주세요.",
-        })
-      }
-
+      if (!phone)
+        return reply
+          .code(401)
+          .send({ message: "휴대폰 번호를 다시 확인해 주세요." })
       const input: CreateOrderInput = {
         qrToken: assertQrToken(String(request.body.qrToken)),
         quantity: Number(request.body.quantity),
         customerName: String(request.body.name).trim(),
         customerPhone: phone,
         paymentMethod: paymentLabel(request.body),
-        simulated: true,
+        simulated: config.paymentMode === "demo",
+      }
+      if (config.paymentMode === "toss") {
+        const order = await store.prepareOrder(input)
+        const successUrl = new URL(
+          `./q/${encodeURIComponent(input.qrToken)}`,
+          `${config.publicWebUrl}/`,
+        )
+        successUrl.searchParams.set("payment", "success")
+        const failUrl = new URL(
+          `./q/${encodeURIComponent(input.qrToken)}`,
+          `${config.publicWebUrl}/`,
+        )
+        failUrl.searchParams.set("payment", "fail")
+        return {
+          simulated: false,
+          payment: {
+            provider: "toss",
+            clientKey: config.tossClientKey,
+            customerKey: "ANONYMOUS",
+            orderId: order.id,
+            amount: order.amount,
+            orderName: order.snapshot.product.name,
+            customerName: order.customerLabel,
+            successUrl: successUrl.href,
+            failUrl: failUrl.href,
+          },
+        }
       }
       const order = await store.createOrder(input)
       const checkoutUrl = new URL(
-        `/q/${encodeURIComponent(input.qrToken)}`,
-        config.publicWebUrl,
+        `./q/${encodeURIComponent(input.qrToken)}`,
+        `${config.publicWebUrl}/`,
       )
       checkoutUrl.searchParams.set("order", order.id)
       return { checkoutUrl: checkoutUrl.href, simulated: true }
     },
   )
 
+  app.post<{
+    Body: {
+      paymentKey: string
+      orderId: string
+      amount: number
+    }
+  }>(
+    "/api/payments/confirm",
+    {
+      schema: {
+        body: {
+          type: "object",
+          required: ["paymentKey", "orderId", "amount"],
+          additionalProperties: false,
+          properties: {
+            paymentKey: { type: "string", minLength: 10, maxLength: 300 },
+            orderId: { type: "string", minLength: 10, maxLength: 80 },
+            amount: { type: "integer", minimum: 1 },
+          },
+        },
+      },
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+    },
+    async (request, reply) => {
+      const phone = await sessionPhone(request, store)
+      if (!phone)
+        return reply
+          .code(401)
+          .send({ message: "휴대폰 번호를 다시 확인해 주세요." })
+      if (config.paymentMode !== "toss")
+        return reply.code(409).send({ message: "현재 테스트 결제 모드입니다." })
+      const pending = await store.getOrderForPayment(
+        request.body.orderId,
+        phone,
+      )
+      if (!pending)
+        return reply.code(404).send({ message: "주문 내역을 찾지 못했어요." })
+      if (pending.status === "paid") return pending
+      if (
+        pending.status !== "pending" ||
+        pending.amount !== request.body.amount
+      )
+        return reply
+          .code(400)
+          .send({ message: "결제 금액 또는 주문 상태가 일치하지 않습니다." })
+
+      await confirmTossPayment(
+        config.tossSecretKey,
+        request.body.paymentKey,
+        pending.id,
+        pending.amount,
+      )
+      try {
+        return await store.confirmOrder(
+          pending.id,
+          request.body.paymentKey,
+          phone,
+        )
+      } catch (error) {
+        await cancelTossPayment(
+          config.tossSecretKey,
+          request.body.paymentKey,
+          "재고 또는 주문 상태 불일치로 자동 취소",
+          pending.id,
+        ).catch(() => undefined)
+        await store.cancelOrder(pending.id, phone)
+        throw error
+      }
+    },
+  )
+
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof DomainError) {
-      return reply.code(error.statusCode).send({ code: error.code, message: error.message })
+      return reply
+        .code(error.statusCode)
+        .send({ code: error.code, message: error.message })
+    }
+    if (error instanceof TossError) {
+      return reply
+        .code(error.statusCode)
+        .send({ code: error.code, message: error.message })
     }
     if (error && typeof error === "object" && "validation" in error) {
-      return reply.code(400).send({ message: "입력한 정보를 다시 확인해 주세요." })
+      return reply
+        .code(400)
+        .send({ message: "입력한 정보를 다시 확인해 주세요." })
     }
     app.log.error(error)
-    return reply.code(500).send({ message: "요청을 처리하지 못했어요. 잠시 후 다시 시도해 주세요." })
+    return reply.code(500).send({
+      message: "요청을 처리하지 못했어요. 잠시 후 다시 시도해 주세요.",
+    })
   })
 
   app.addHook("onClose", async () => store.close())

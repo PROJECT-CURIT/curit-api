@@ -14,7 +14,10 @@ export type QrSnapshot = {
     address: string
     hours: string
   }
-  project?: { title: string; concept: string }
+  project?: {
+    title: string
+    concept: string
+  }
   creator?: {
     name: string
     handle: string
@@ -43,7 +46,7 @@ export type QrSnapshot = {
 export type Order = {
   v: 1
   id: string
-  status: "paid"
+  status: "pending" | "paid" | "cancelled"
   simulated: boolean
   artworkId: string
   quantity: number
@@ -70,9 +73,24 @@ export type CreateOrderInput = {
 
 export interface CommerceStore {
   getListing(qrToken: string): Promise<QrSnapshot | null>
-  createSession(token: string, customerPhone: string, expiresAt: Date): Promise<void>
+  createSession(
+    token: string,
+    customerPhone: string,
+    expiresAt: Date,
+  ): Promise<void>
   getSessionPhone(token: string): Promise<string | null>
   createOrder(input: CreateOrderInput): Promise<Order>
+  prepareOrder(input: CreateOrderInput): Promise<Order>
+  getOrderForPayment(
+    orderId: string,
+    customerPhone: string,
+  ): Promise<Order | null>
+  confirmOrder(
+    orderId: string,
+    paymentKey: string,
+    customerPhone: string,
+  ): Promise<Order>
+  cancelOrder(orderId: string, customerPhone: string): Promise<void>
   listOrders(customerPhone: string): Promise<Order[]>
   getOrder(orderId: string, customerPhone: string): Promise<Order | null>
   close(): Promise<void>

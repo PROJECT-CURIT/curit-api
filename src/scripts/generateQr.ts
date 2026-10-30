@@ -5,10 +5,15 @@ import { seedListings } from "../seeds.js"
 
 function argument(name: string, fallback: string) {
   const index = process.argv.indexOf(name)
-  return index >= 0 && process.argv[index + 1] ? process.argv[index + 1]! : fallback
+  return index >= 0 && process.argv[index + 1]
+    ? process.argv[index + 1]!
+    : fallback
 }
 
-const baseUrl = argument("--base-url", "http://localhost:5173").replace(/\/$/, "")
+const baseUrl = argument("--base-url", "http://localhost:5173").replace(
+  /\/$/,
+  "",
+)
 const output = resolve(argument("--output", "generated-qr"))
 await mkdir(output, { recursive: true })
 
@@ -20,6 +25,12 @@ for (const seed of seedListings) {
     margin: 2,
     color: { dark: "#23351f", light: "#ffffff" },
   })
-  await writeFile(resolve(output, `${seed.snapshot.product.artworkId.replace(/[^a-z0-9_-]/gi, "-")}.svg`), svg)
+  await writeFile(
+    resolve(
+      output,
+      `${seed.snapshot.product.artworkId.replace(/[^a-z0-9_-]/gi, "-")}.svg`,
+    ),
+    svg,
+  )
   console.log(`${seed.snapshot.product.name}: ${target}`)
 }

@@ -7,6 +7,8 @@ export type AppConfig = {
   sessionSecret: string
   paymentMode: "demo" | "toss"
   databaseUrl: string
+  tossClientKey: string
+  tossSecretKey: string
 }
 
 export function loadConfig(
@@ -20,9 +22,7 @@ export function loadConfig(
         : "development"
   const sessionSecret =
     environment.SESSION_SECRET ||
-    (nodeEnv === "production"
-      ? ""
-      : "curit-local-development-secret-change-me")
+    (nodeEnv === "production" ? "" : "curit-local-development-secret-change-me")
   if (sessionSecret.length < 32) {
     throw new Error("SESSION_SECRET must contain at least 32 characters")
   }
@@ -31,18 +31,26 @@ export function loadConfig(
   if (nodeEnv === "production" && paymentMode === "demo") {
     throw new Error("PAYMENT_MODE=demo cannot be used in production")
   }
+  const tossClientKey = environment.TOSS_CLIENT_KEY || ""
+  const tossSecretKey = environment.TOSS_SECRET_KEY || ""
+  if (paymentMode === "toss" && (!tossClientKey || !tossSecretKey)) {
+    throw new Error(
+      "TOSS_CLIENT_KEY and TOSS_SECRET_KEY are required when PAYMENT_MODE=toss",
+    )
+  }
 
   return {
     nodeEnv,
     host: environment.HOST || "0.0.0.0",
     port: Number(environment.PORT || 4100),
     webOrigin: environment.WEB_ORIGIN || "http://localhost:5173",
-    publicWebUrl: (environment.PUBLIC_WEB_URL || "http://localhost:5173").replace(
-      /\/$/,
-      "",
-    ),
+    publicWebUrl: (
+      environment.PUBLIC_WEB_URL || "http://localhost:5173"
+    ).replace(/\/$/, ""),
     sessionSecret,
     paymentMode,
     databaseUrl: environment.DATABASE_URL || "",
+    tossClientKey,
+    tossSecretKey,
   }
 }
