@@ -493,6 +493,32 @@ async function encryptedTossPayoutRequest(
   return result
 }
 
+async function tossPayoutAvailableAmount() {
+  if (PAYOUT_MODE !== "toss" || !TOSS_PAYOUT_SECRET_KEY)
+    throw Object.assign(new Error("지급대행 계약 키가 설정되지 않았습니다."), {
+      status: 503,
+    })
+  const response = await fetch("https://api.tosspayments.com/v2/balances", {
+    headers: {
+      Authorization: `Basic ${btoa(`${TOSS_PAYOUT_SECRET_KEY}:`)}`,
+      Accept: "application/json",
+    },
+  })
+  const result = await response.json().catch(() => ({}))
+  if (!response.ok)
+    throw Object.assign(new Error(result?.message || "지급 가능 잔액을 확인하지 못했습니다."), {
+      status: response.status >= 500 ? 502 : 400,
+      provider: result,
+    })
+  const balance = result?.entityBody || result
+  const availableAmount = Number(balance?.availableAmount?.value)
+  if (!Number.isSafeInteger(availableAmount) || availableAmount < 0)
+    throw Object.assign(new Error("토스 지급 가능 잔액 응답을 검증하지 못했습니다."), {
+      status: 502,
+    })
+  return availableAmount
+}
+
 function authorizedJobRequest(request: Request) {
   const supplied = request.headers.get("x-curit-job-secret") || ""
   if (!OPERATIONS_JOB_SECRET || supplied.length !== OPERATIONS_JOB_SECRET.length) return false
@@ -929,6 +955,21 @@ Deno.serve(async (request) => {
       }))
       if (payoutBody.some((row) => !row.destination))
         return json(request, { message: "토스 판매자 식별자가 누락됐습니다." }, 409)
+      const requestedAmount = payoutBody.reduce(
+        (sum, row) => sum + Number(row.amount.value),
+        0,
+      )
+      const availableAmount = await tossPayoutAvailableAmount()
+      if (availableAmount < requestedAmount)
+        return json(
+          request,
+          {
+            message: "토스 지급 가능 잔액이 부족합니다.",
+            availableAmount,
+            requestedAmount,
+          },
+          409,
+        )
       const payoutResult = await encryptedTossPayoutRequest(
         "/v2/payouts",
         payoutBody,
