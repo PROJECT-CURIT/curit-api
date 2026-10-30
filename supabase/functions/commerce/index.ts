@@ -19,6 +19,7 @@ const PAYOUT_MODE = Deno.env.get("PAYOUT_MODE") === "toss" ? "toss" : "disabled"
 const PAYOUT_JOB_SECRET = Deno.env.get("PAYOUT_JOB_SECRET") || ""
 const OPERATIONS_JOB_SECRET =
   Deno.env.get("OPERATIONS_JOB_SECRET") || PAYOUT_JOB_SECRET
+const FUNCTION_REGION = Deno.env.get("SB_REGION") || "unknown"
 const origins = (
   Deno.env.get("WEB_ORIGIN") ||
   `${DEFAULT_WEB_URL},http://localhost:5173,http://localhost:8082`
@@ -620,8 +621,10 @@ Deno.serve(async (request) => {
     if (request.method === "GET" && path === "/health")
       return json(request, {
         status: "ok",
+        region: FUNCTION_REGION,
         paymentMode: PAYMENT_MODE,
         webhookReady: Boolean(TOSS_WEBHOOK_SECURITY_KEY),
+        expectedMidReady: Boolean(TOSS_EXPECTED_MID),
         payoutMode: PAYOUT_MODE,
         payoutReady: Boolean(TOSS_PAYOUT_SECRET_KEY && TOSS_PAYOUT_SECURITY_KEY),
       })

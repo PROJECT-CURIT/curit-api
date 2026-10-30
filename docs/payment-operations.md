@@ -11,7 +11,7 @@
 
 운영 URL은 다음과 같다.
 
-`https://gmfjejxtqkuviwbxpgrw.supabase.co/functions/v1/commerce/api/webhooks/toss`
+`https://gmfjejxtqkuviwbxpgrw.supabase.co/functions/v1/commerce/api/webhooks/toss?forceFunctionRegion=ap-northeast-2`
 
 토스 개발자센터에서 MID별로 다음 이벤트를 등록한다.
 
@@ -19,7 +19,7 @@
 - `CANCEL_STATUS_CHANGED`
 - 지급대행 계약 후 `payout.changed`, `seller.changed`
 
-Edge Function secret에 `TOSS_WEBHOOK_SECURITY_KEY`를 등록해야 한다. 서버는 HMAC SHA-256 서명, 결제 조회 API의 `orderId`, `totalAmount`, `mId`, `status`를 모두 확인한다.
+Edge Function secret에 같은 MID에서 발급된 `TOSS_WEBHOOK_SECURITY_KEY`와 `TOSS_EXPECTED_MID`를 등록해야 한다. 서버는 HMAC SHA-256 서명, 결제 조회 API의 `orderId`, `totalAmount`, `mId`, `status`를 모두 확인한다. URL의 `forceFunctionRegion=ap-northeast-2`는 웹훅 처리와 결제 재조회 요청을 서울 리전에서 실행하도록 고정한다.
 
 ## 네이티브 푸시
 
@@ -39,6 +39,6 @@ Edge Function secret에 `TOSS_WEBHOOK_SECURITY_KEY`를 등록해야 한다. 서�
 4. 지급 가능한 잔액과 운영 취소 절차 확인
 5. 토스 API 키 접근 정책을 운영 환경에 맞게 설정
 
-Supabase Edge Function은 고정된 아웃바운드 IP를 제공하지 않는다. 따라서 토스 접근 정책을 IP 기준으로 적용하려면 고정 IP를 가진 아웃바운드 프록시를 두고 그 IP를 등록해야 한다. 별도 프록시를 두지 않는 초기 운영에서는 지급 실행 요청에 `x-region: ap-northeast-2`를 지정하고, 토스 접근 정책을 국가 `대한민국`으로 설정한 뒤 테스트 환경에서 먼저 검증한다. 웹훅 수신은 토스에서 CURI:T으로 들어오는 요청이므로 이 아웃바운드 정책의 대상이 아니다.
+Supabase Edge Function은 고정된 아웃바운드 IP를 제공하지 않는다. 따라서 토스 접근 정책을 IP 기준으로 적용하려면 고정 IP를 가진 아웃바운드 프록시를 두고 그 IP를 등록해야 한다. 별도 프록시를 두지 않는 초기 운영에서는 모든 Edge Function 호출에 `forceFunctionRegion=ap-northeast-2`를 붙이고, 토스 접근 정책을 국가 `대한민국`으로 설정한 뒤 테스트 환경에서 먼저 검증한다. 웹훅 수신 자체는 토스에서 CURI:T으로 들어오는 요청이므로 아웃바운드 정책의 대상이 아니지만, 웹훅 처리 중 수행하는 결제 재조회는 대상이다.
 
 판매자 등록은 `POST /api/internal/payouts/sellers`, 지급 실행은 `POST /api/internal/payouts/run`을 사용한다. 두 엔드포인트 모두 `x-curit-job-secret`과 명시적인 실행 확인값이 필요하다. 계좌·사업자 정보는 토스에 JWE(`dir` + `A256GCM`)로 전송하고 CURI:T DB에는 저장하지 않으며, 토스 Seller 식별자와 심사 상태만 보관한다. 지급 실행 전 토스의 지급 가능 잔액을 조회해 요청 합계보다 부족하면 실행을 차단하고, 실제 지급 요청에는 JWE와 멱등키를 적용한다.
