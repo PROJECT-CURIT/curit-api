@@ -615,11 +615,12 @@ Deno.serve(async (request) => {
       const token = decodeURIComponent(qrMatch[1]!)
       if (!/^[A-Za-z0-9_-]{12,128}$/.test(token))
         return json(request, { message: "구매 링크를 확인해 주세요." }, 404)
-      const { data } = await admin
+      const { data, error } = await admin
         .from("qr_listings")
         .select("stock, price, sale_status, snapshot")
         .eq("qr_token_hash", await digest(token))
         .maybeSingle()
+      if (error) throw error
       if (!data)
         return json(
           request,
