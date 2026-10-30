@@ -43,7 +43,7 @@ BEGIN
     '제주 자연에서 영감을 받은 도예 작가',
     ARRAY['도예', '세라믹', '생활공예'],
     ARRAY['제주', '서울'],
-    'https://project-curit.github.io/curit-qr-web/q/demo-dessert-plate',
+    'https://project-curit.github.io/curit-qr-web/?qr=demo-dessert-plate',
     'https://instagram.com/soyeon_craft'
   )
   ON CONFLICT (user_id) DO UPDATE SET

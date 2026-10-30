@@ -187,7 +187,7 @@ describe("CURI:T QR commerce API", () => {
       amount: 70000,
       clientKey: "test_ck_example",
       successUrl:
-        "https://project-curit.github.io/curit-qr-web/q/demo-mug-white-gray?payment=success",
+        "https://project-curit.github.io/curit-qr-web/?qr=demo-mug-white-gray&payment=success",
     })
   })
 })
