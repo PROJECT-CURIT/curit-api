@@ -18,7 +18,9 @@ const output = resolve(argument("--output", "generated-qr"))
 await mkdir(output, { recursive: true })
 
 for (const seed of seedListings) {
-  const target = `${baseUrl}/q/${encodeURIComponent(seed.token)}`
+  const targetUrl = new URL(`${baseUrl}/`)
+  targetUrl.searchParams.set("qr", seed.token)
+  const target = targetUrl.href
   const svg = await QRCode.toString(target, {
     type: "svg",
     errorCorrectionLevel: "M",

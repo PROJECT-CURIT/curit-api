@@ -63,6 +63,12 @@ function routePath(request: Request) {
   return index >= 0 ? path.slice(index + marker.length) || "/" : path
 }
 
+function qrWebUrl(token: string) {
+  const destination = new URL(`${PUBLIC_WEB_URL}/`)
+  destination.searchParams.set("qr", token)
+  return destination
+}
+
 async function phoneFor(request: Request) {
   const sessionToken =
     request.headers.get("x-curit-session") ||
@@ -115,9 +121,7 @@ function managedListing(row: Record<string, unknown>) {
           : "SOLD_OUT"
         : "PAUSED",
     pickupMode: snapshot?.product?.pickupMode || "immediate",
-    qrUrl: token
-      ? new URL(`./q/${encodeURIComponent(token)}`, `${PUBLIC_WEB_URL}/`).href
-      : "",
+    qrUrl: token ? qrWebUrl(token).href : "",
   }
 }
 
@@ -729,15 +733,9 @@ Deno.serve(async (request) => {
             { message: "결제 상점 키가 설정되지 않았습니다." },
             503,
           )
-        const successUrl = new URL(
-          `./q/${encodeURIComponent(qrToken)}`,
-          `${PUBLIC_WEB_URL}/`,
-        )
+        const successUrl = qrWebUrl(qrToken)
         successUrl.searchParams.set("payment", "success")
-        const failUrl = new URL(
-          `./q/${encodeURIComponent(qrToken)}`,
-          `${PUBLIC_WEB_URL}/`,
-        )
+        const failUrl = qrWebUrl(qrToken)
         failUrl.searchParams.set("payment", "fail")
         const pendingSnapshot = row.snapshot as { product?: { name?: string } }
         return json(request, {
@@ -761,10 +759,7 @@ Deno.serve(async (request) => {
         p_payment_key: "demo",
       })
       if (confirmed.error) throw confirmed.error
-      const destination = new URL(
-        `./q/${encodeURIComponent(qrToken)}`,
-        `${PUBLIC_WEB_URL}/`,
-      )
+      const destination = qrWebUrl(qrToken)
       destination.searchParams.set("order", String(row.id))
       return json(request, { checkoutUrl: destination.href, simulated: true })
     }

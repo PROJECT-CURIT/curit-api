@@ -45,6 +45,12 @@ function paymentLabel(body: Record<string, unknown>) {
   return body.paymentMethod === "kakaopay" ? "카카오페이" : "토스페이"
 }
 
+function qrWebUrl(baseUrl: string, token: string) {
+  const destination = new URL(`${baseUrl}/`)
+  destination.searchParams.set("qr", token)
+  return destination
+}
+
 export async function buildApp({
   config,
   store,
@@ -213,15 +219,9 @@ export async function buildApp({
       }
       if (config.paymentMode === "toss") {
         const order = await store.prepareOrder(input)
-        const successUrl = new URL(
-          `./q/${encodeURIComponent(input.qrToken)}`,
-          `${config.publicWebUrl}/`,
-        )
+        const successUrl = qrWebUrl(config.publicWebUrl, input.qrToken)
         successUrl.searchParams.set("payment", "success")
-        const failUrl = new URL(
-          `./q/${encodeURIComponent(input.qrToken)}`,
-          `${config.publicWebUrl}/`,
-        )
+        const failUrl = qrWebUrl(config.publicWebUrl, input.qrToken)
         failUrl.searchParams.set("payment", "fail")
         return {
           simulated: false,
@@ -239,10 +239,7 @@ export async function buildApp({
         }
       }
       const order = await store.createOrder(input)
-      const checkoutUrl = new URL(
-        `./q/${encodeURIComponent(input.qrToken)}`,
-        `${config.publicWebUrl}/`,
-      )
+      const checkoutUrl = qrWebUrl(config.publicWebUrl, input.qrToken)
       checkoutUrl.searchParams.set("order", order.id)
       return { checkoutUrl: checkoutUrl.href, simulated: true }
     },
