@@ -37,6 +37,8 @@ Edge Function secret에 `TOSS_WEBHOOK_SECURITY_KEY`를 등록해야 한다. 서�
 2. API 개별 시크릿 키와 64자 보안 키 발급
 3. 판매자의 토스 Seller 등록과 본인확인/KYC 완료
 4. 지급 가능한 잔액과 운영 취소 절차 확인
-5. 운영 고정 IP를 토스 API 키 접근 정책에 등록
+5. 토스 API 키 접근 정책을 운영 환경에 맞게 설정
+
+Supabase Edge Function은 고정된 아웃바운드 IP를 제공하지 않는다. 따라서 토스 접근 정책을 IP 기준으로 적용하려면 고정 IP를 가진 아웃바운드 프록시를 두고 그 IP를 등록해야 한다. 별도 프록시를 두지 않는 초기 운영에서는 지급 실행 요청에 `x-region: ap-northeast-2`를 지정하고, 토스 접근 정책을 국가 `대한민국`으로 설정한 뒤 테스트 환경에서 먼저 검증한다. 웹훅 수신은 토스에서 CURI:T으로 들어오는 요청이므로 이 아웃바운드 정책의 대상이 아니다.
 
 판매자 등록은 `POST /api/internal/payouts/sellers`, 지급 실행은 `POST /api/internal/payouts/run`을 사용한다. 두 엔드포인트 모두 `x-curit-job-secret`과 명시적인 실행 확인값이 필요하다. 계좌·사업자 정보는 토스에 JWE(`dir` + `A256GCM`)로 전송하고 CURI:T DB에는 저장하지 않으며, 토스 Seller 식별자와 심사 상태만 보관한다. 지급 요청에도 JWE와 멱등키를 적용한다.
