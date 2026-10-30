@@ -40,10 +40,14 @@ function paymentLabel(body: Record<string, unknown>) {
 
 export async function buildApp({ config, store, logger = false }: BuildAppOptions) {
   const app = Fastify({ logger, trustProxy: true })
+  const allowedWebOrigins = config.webOrigin
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean)
 
   await app.register(cookie, { secret: config.sessionSecret })
   await app.register(cors, {
-    origin: config.webOrigin,
+    origin: allowedWebOrigins,
     credentials: true,
     methods: ["GET", "POST", "OPTIONS"],
   })

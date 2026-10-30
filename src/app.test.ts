@@ -15,6 +15,11 @@ const config: AppConfig = {
   databaseUrl: "",
 }
 
+const multiOriginConfig: AppConfig = {
+  ...config,
+  webOrigin: "http://localhost:5173, http://localhost:8082",
+}
+
 describe("CURI:T QR commerce API", () => {
   let app: Awaited<ReturnType<typeof buildApp>>
 
@@ -35,6 +40,32 @@ describe("CURI:T QR commerce API", () => {
     expect(plate.statusCode).toBe(200)
     expect(mug.json().product.artworkId).toBe("0-0")
     expect(plate.json().product.artworkId).toBe("0-2")
+  })
+
+  it("allows both QR web and mobile web origins", async () => {
+    await app.close()
+    app = await buildApp({
+      config: multiOriginConfig,
+      store: new MemoryStore(seedListings),
+    })
+
+    const qrWeb = await app.inject({
+      method: "GET",
+      url: "/api/v1/qr/demo-mug-white-gray",
+      headers: { origin: "http://localhost:5173" },
+    })
+    const mobileWeb = await app.inject({
+      method: "GET",
+      url: "/api/v1/qr/demo-mug-white-gray",
+      headers: { origin: "http://localhost:8082" },
+    })
+
+    expect(qrWeb.headers["access-control-allow-origin"]).toBe(
+      "http://localhost:5173",
+    )
+    expect(mobileWeb.headers["access-control-allow-origin"]).toBe(
+      "http://localhost:8082",
+    )
   })
 
   it("calculates amount from server data even if a client sends a fake price", async () => {
