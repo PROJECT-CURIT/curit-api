@@ -224,6 +224,15 @@ async function toss(
   return result
 }
 
+function tossPaymentMethod(payment: Record<string, unknown>) {
+  const method = String(payment.method || "").trim()
+  if (!method) return ""
+  if (method !== "간편결제") return method
+  const easyPay = payment.easyPay as { provider?: unknown } | null
+  const provider = String(easyPay?.provider || "").trim()
+  return provider ? `${provider} 간편결제` : method
+}
+
 async function insertPending(body: Record<string, unknown>, phone: string) {
   const qrToken = String(body.qrToken || "")
   const quantity = Number(body.quantity)
@@ -783,7 +792,7 @@ Deno.serve(async (request) => {
           { message: "결제 금액 또는 주문 상태가 일치하지 않습니다." },
           400,
         )
-      await toss(
+      const tossPayment = await toss(
         "/confirm",
         { paymentKey, orderId, amount },
         `confirm-${orderId}`,
@@ -809,9 +818,24 @@ Deno.serve(async (request) => {
           .eq("status", "pending")
         throw confirmed.error
       }
-      const paid = Array.isArray(confirmed.data)
+      let paid = Array.isArray(confirmed.data)
         ? confirmed.data[0]
         : confirmed.data
+      const actualPaymentMethod = tossPaymentMethod(tossPayment)
+      if (
+        actualPaymentMethod &&
+        actualPaymentMethod !== paid?.payment_method
+      ) {
+        const corrected = await admin
+          .from("qr_orders")
+          .update({ payment_method: actualPaymentMethod })
+          .eq("id", orderId)
+          .eq("status", "paid")
+          .select("*")
+          .single()
+        if (corrected.error) console.error(corrected.error)
+        else paid = corrected.data
+      }
       return json(request, orderResponse(paid as Record<string, unknown>))
     }
 
