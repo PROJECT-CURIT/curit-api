@@ -1,0 +1,2 @@
+[functions.commerce]
+verify_jwt = false
