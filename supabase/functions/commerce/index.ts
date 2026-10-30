@@ -181,6 +181,22 @@ async function managementListingIds(userId: string) {
   return (data || []).map((row) => String(row.id))
 }
 
+async function storeOwnerCollaborationIds(userId: string) {
+  const store = await admin
+    .from("store_profiles")
+    .select("id")
+    .eq("owner_id", userId)
+    .maybeSingle()
+  if (store.error) throw store.error
+  if (!store.data) return null
+  const collaborations = await admin
+    .from("collaborations")
+    .select("id")
+    .eq("store_id", store.data.id)
+  if (collaborations.error) throw collaborations.error
+  return (collaborations.data || []).map((row) => String(row.id))
+}
+
 function orderResponse(row: Record<string, unknown>) {
   return {
     v: 1,
@@ -425,6 +441,12 @@ Deno.serve(async (request) => {
           { message: "이 협업의 QR을 발급할 권한이 없습니다." },
           403,
         )
+      if (participant.store.owner_id !== user.id)
+        return json(
+          request,
+          { message: "매장 운영자만 QR을 발급할 수 있습니다." },
+          403,
+        )
       if (!["approved", "active"].includes(participant.collaboration.status))
         return json(
           request,
@@ -570,7 +592,7 @@ Deno.serve(async (request) => {
       if (!user) return json(request, { message: "로그인이 필요합니다." }, 401)
       const listing = await admin
         .from("qr_listings")
-        .select("id, collaboration_id")
+        .select("id, collaboration_id, snapshot")
         .eq("id", managedMatch[1]!)
         .maybeSingle()
       if (listing.error) throw listing.error
@@ -586,6 +608,12 @@ Deno.serve(async (request) => {
           { message: "이 상품을 수정할 권한이 없습니다." },
           403,
         )
+      if (participant.store.owner_id !== user.id)
+        return json(
+          request,
+          { message: "매장 운영자만 QR 판매 설정을 변경할 수 있습니다." },
+          403,
+        )
       const body = await request.json()
       const updates: Record<string, unknown> = {}
       if (body.stock !== undefined) {
@@ -593,6 +621,16 @@ Deno.serve(async (request) => {
         if (!Number.isSafeInteger(stock) || stock < 0 || stock > 100000)
           return json(request, { message: "재고 수량을 확인해 주세요." }, 400)
         updates.stock = stock
+      }
+      if (body.price !== undefined) {
+        const price = Number(body.price)
+        if (!Number.isSafeInteger(price) || price < 100 || price > 100000000)
+          return json(request, { message: "판매 가격을 확인해 주세요." }, 400)
+        updates.price = price
+      }
+      if (body.pickupMode !== undefined) {
+        if (!["immediate", "exhibition"].includes(body.pickupMode))
+          return json(request, { message: "수령 방식을 확인해 주세요." }, 400)
       }
       if (body.saleStatus !== undefined) {
         if (!["active", "preparing"].includes(body.saleStatus))
@@ -609,7 +647,21 @@ Deno.serve(async (request) => {
         updates.sale_status = body.saleStatus
       }
       if (!Object.keys(updates).length)
-        return json(request, { message: "변경할 값을 입력해 주세요." }, 400)
+        if (body.pickupMode === undefined)
+          return json(request, { message: "변경할 값을 입력해 주세요." }, 400)
+      if (body.price !== undefined || body.pickupMode !== undefined) {
+        const snapshot = listing.data.snapshot as Record<string, any>
+        updates.snapshot = {
+          ...snapshot,
+          product: {
+            ...snapshot.product,
+            ...(body.price !== undefined ? { price: Number(body.price) } : {}),
+            ...(body.pickupMode !== undefined
+              ? { pickupMode: body.pickupMode }
+              : {}),
+          },
+        }
+      }
       updates.updated_at = new Date().toISOString()
       const updated = await admin
         .from("qr_listings")
@@ -624,6 +676,105 @@ Deno.serve(async (request) => {
         request,
         managedListing(updated.data as Record<string, unknown>),
       )
+    }
+
+    if (path === "/api/management/orders" && request.method === "GET") {
+      const user = await appUserFor(request)
+      if (!user) return json(request, { message: "로그인이 필요합니다." }, 401)
+      const collaborationIds = await storeOwnerCollaborationIds(user.id)
+      if (collaborationIds === null)
+        return json(
+          request,
+          { message: "매장 운영자만 주문을 확인할 수 있습니다." },
+          403,
+        )
+      if (!collaborationIds.length) return json(request, { orders: [] })
+      const listings = await admin
+        .from("qr_listings")
+        .select("id, collaboration_id")
+        .in("collaboration_id", collaborationIds)
+      if (listings.error) throw listings.error
+      const listingIds = (listings.data || []).map((row) => String(row.id))
+      if (!listingIds.length) return json(request, { orders: [] })
+      const orders = await admin
+        .from("qr_orders")
+        .select(
+          "id, listing_id, customer_name, customer_phone, quantity, amount, status, payment_method, pickup_mode, pickup_date, snapshot, fulfillment_status, delivered_at, created_at",
+        )
+        .in("listing_id", listingIds)
+        .eq("status", "paid")
+        .order("created_at", { ascending: false })
+      if (orders.error) throw orders.error
+      return json(request, {
+        orders: (orders.data || []).map((row) => ({
+          id: row.id,
+          listingId: row.listing_id,
+          productName:
+            (row.snapshot as Record<string, any>)?.product?.name || "등록 상품",
+          imageUrl:
+            (row.snapshot as Record<string, any>)?.product?.image || "",
+          customerName: row.customer_name,
+          customerPhoneLast4: String(row.customer_phone || "").slice(-4),
+          quantity: Number(row.quantity),
+          amount: Number(row.amount),
+          paymentMethod: row.payment_method,
+          pickupMode: row.pickup_mode,
+          pickupDate: row.pickup_date,
+          fulfillmentStatus: row.fulfillment_status,
+          deliveredAt: row.delivered_at,
+          createdAt: row.created_at,
+        })),
+      })
+    }
+
+    const managedOrderMatch = path.match(
+      /^\/api\/management\/orders\/(QR-[0-9a-f-]+)$/i,
+    )
+    if (managedOrderMatch && request.method === "PATCH") {
+      const user = await appUserFor(request)
+      if (!user) return json(request, { message: "로그인이 필요합니다." }, 401)
+      const order = await admin
+        .from("qr_orders")
+        .select("id, listing_id, status")
+        .eq("id", managedOrderMatch[1]!)
+        .maybeSingle()
+      if (order.error) throw order.error
+      if (!order.data || order.data.status !== "paid")
+        return json(request, { message: "결제 완료 주문을 찾지 못했습니다." }, 404)
+      const listing = await admin
+        .from("qr_listings")
+        .select("collaboration_id")
+        .eq("id", order.data.listing_id)
+        .maybeSingle()
+      if (listing.error) throw listing.error
+      if (!listing.data?.collaboration_id)
+        return json(request, { message: "협업 정보를 찾지 못했습니다." }, 404)
+      const participant = await participantCollaboration(
+        user.id,
+        listing.data.collaboration_id,
+      )
+      if (!participant || participant.store.owner_id !== user.id)
+        return json(request, { message: "매장 운영자만 수령 상태를 변경할 수 있습니다." }, 403)
+      const body = await request.json()
+      const next = String(body.fulfillmentStatus || "")
+      if (!["awaiting_pickup", "reserved", "delivered"].includes(next))
+        return json(request, { message: "수령 상태를 확인해 주세요." }, 400)
+      const updated = await admin
+        .from("qr_orders")
+        .update({
+          fulfillment_status: next,
+          delivered_at: next === "delivered" ? new Date().toISOString() : null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", order.data.id)
+        .select("id, fulfillment_status, delivered_at")
+        .single()
+      if (updated.error) throw updated.error
+      return json(request, {
+        id: updated.data.id,
+        fulfillmentStatus: updated.data.fulfillment_status,
+        deliveredAt: updated.data.delivered_at,
+      })
     }
 
     const qrMatch = path.match(/^\/api\/v1\/qr\/([^/]+)$/)

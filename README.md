@@ -56,7 +56,7 @@ pnpm build
 
 `PAYMENT_MODE=toss`에서는 `TOSS_CLIENT_KEY`, `TOSS_SECRET_KEY`가 모두 있어야 서버가 시작됩니다. 시크릿 키는 서버나 Edge Function secret에만 저장합니다. `demo` 모드는 실제 과금 없이 같은 주문·재고 흐름을 검증합니다.
 
-`supabase/functions/commerce`는 방문객 주문 API와 인증 사용자용 `/api/management/listings`를 함께 제공합니다. 앱은 Supabase access token을 보내고, 함수가 협업 참여자 여부를 확인한 뒤 상품별 QR 발급·조회·재고 상태 변경을 처리합니다.
+`supabase/functions/commerce`는 방문객 주문 API와 인증 사용자용 `/api/management/listings`, `/api/management/orders`를 함께 제공합니다. 공개 QR·결제 경로 때문에 함수 자체의 JWT 게이트는 끄되, 관리 경로에서는 함수가 Supabase access token을 직접 검증합니다. QR 발급·가격/재고 변경·주문 수령 처리는 해당 매장 소유자만 수행할 수 있고, 크리에이터 계정은 서버에서 거절합니다.
 
 ## 운영 전 남은 외부 준비
 
