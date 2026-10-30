@@ -1,4 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2.118.0"
+import { CompactEncrypt, compactDecrypt } from "npm:jose@6.1.3"
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || ""
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || ""
@@ -9,6 +10,15 @@ const PUBLIC_WEB_URL = (
 const PAYMENT_MODE = Deno.env.get("PAYMENT_MODE") === "toss" ? "toss" : "demo"
 const TOSS_CLIENT_KEY = Deno.env.get("TOSS_CLIENT_KEY") || ""
 const TOSS_SECRET_KEY = Deno.env.get("TOSS_SECRET_KEY") || ""
+const TOSS_WEBHOOK_SECURITY_KEY =
+  Deno.env.get("TOSS_WEBHOOK_SECURITY_KEY") || ""
+const TOSS_EXPECTED_MID = Deno.env.get("TOSS_EXPECTED_MID") || ""
+const TOSS_PAYOUT_SECRET_KEY = Deno.env.get("TOSS_PAYOUT_SECRET_KEY") || ""
+const TOSS_PAYOUT_SECURITY_KEY = Deno.env.get("TOSS_PAYOUT_SECURITY_KEY") || ""
+const PAYOUT_MODE = Deno.env.get("PAYOUT_MODE") === "toss" ? "toss" : "disabled"
+const PAYOUT_JOB_SECRET = Deno.env.get("PAYOUT_JOB_SECRET") || ""
+const OPERATIONS_JOB_SECRET =
+  Deno.env.get("OPERATIONS_JOB_SECRET") || PAYOUT_JOB_SECRET
 const origins = (
   Deno.env.get("WEB_ORIGIN") ||
   `${DEFAULT_WEB_URL},http://localhost:5173,http://localhost:8082`
@@ -28,7 +38,7 @@ function cors(request: Request) {
       ? origin
       : origins[0] || "",
     "Access-Control-Allow-Headers":
-      "authorization, content-type, x-client-info, x-curit-session, apikey",
+      "authorization, content-type, x-client-info, x-curit-session, x-curit-job-secret, apikey, tosspayments-webhook-signature, tosspayments-webhook-transmission-time, tosspayments-webhook-transmission-id",
     "Access-Control-Allow-Methods": "GET, POST, PATCH, OPTIONS",
     "Access-Control-Allow-Credentials": "true",
     Vary: "Origin",
@@ -253,6 +263,245 @@ function tossPaymentMethod(payment: Record<string, unknown>) {
   return provider ? `${provider} 간편결제` : method
 }
 
+async function tossPayment(paymentKey: string) {
+  const response = await fetch(
+    `https://api.tosspayments.com/v1/payments/${encodeURIComponent(paymentKey)}`,
+    {
+      headers: { Authorization: `Basic ${btoa(`${TOSS_SECRET_KEY}:`)}` },
+      signal: AbortSignal.timeout(5000),
+    },
+  )
+  const result = await response.json().catch(() => ({}))
+  if (!response.ok)
+    throw Object.assign(new Error(result?.message || "결제 상태를 확인하지 못했습니다."), {
+      status: response.status >= 500 ? 502 : 400,
+      code: result?.code,
+    })
+  return result as Record<string, any>
+}
+
+function bytesFromHex(value: string) {
+  if (!/^[0-9a-f]{64}$/i.test(value))
+    throw Object.assign(new Error("토스 보안 키 형식이 올바르지 않습니다."), {
+      status: 503,
+    })
+  return Uint8Array.from(value.match(/.{2}/g)!, (part) => parseInt(part, 16))
+}
+
+function sameBytes(left: Uint8Array, right: Uint8Array) {
+  if (left.length !== right.length) return false
+  let mismatch = 0
+  for (let index = 0; index < left.length; index++)
+    mismatch |= left[index]! ^ right[index]!
+  return mismatch === 0
+}
+
+async function verifyTossWebhook(request: Request, rawBody: string) {
+  if (!TOSS_WEBHOOK_SECURITY_KEY)
+    throw Object.assign(new Error("웹훅 보안 키가 설정되지 않았습니다."), {
+      status: 503,
+    })
+  const transmissionTime =
+    request.headers.get("tosspayments-webhook-transmission-time") || ""
+  const signature =
+    request.headers.get("tosspayments-webhook-signature") || ""
+  if (!transmissionTime || !signature)
+    throw Object.assign(new Error("웹훅 서명 헤더가 없습니다."), {
+      status: 401,
+    })
+  const key = await crypto.subtle.importKey(
+    "raw",
+    bytesFromHex(TOSS_WEBHOOK_SECURITY_KEY),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  )
+  const expected = new Uint8Array(
+    await crypto.subtle.sign(
+      "HMAC",
+      key,
+      new TextEncoder().encode(`${rawBody}:${transmissionTime}`),
+    ),
+  )
+  const verified = signature.split(",").some((candidate) => {
+    const encoded = candidate.trim().match(/^v1:(.+)$/)?.[1]
+    if (!encoded) return false
+    try {
+      return sameBytes(expected, Uint8Array.from(atob(encoded), (char) => char.charCodeAt(0)))
+    } catch {
+      return false
+    }
+  })
+  if (!verified)
+    throw Object.assign(new Error("웹훅 서명이 일치하지 않습니다."), {
+      status: 401,
+    })
+}
+
+function webhookPaymentData(payload: Record<string, any>) {
+  return payload.eventType === "PAYMENT_STATUS_CHANGED" ? payload.data : null
+}
+
+function lastCancellation(payment: Record<string, any>) {
+  const cancellations = Array.isArray(payment.cancels) ? payment.cancels : []
+  return cancellations.length ? cancellations[cancellations.length - 1] : null
+}
+
+async function sendPush(
+  userIds: string[],
+  title: string,
+  body: string,
+  data: Record<string, unknown> = {},
+) {
+  const targets = [...new Set(userIds.filter(Boolean))]
+  if (!targets.length) return
+  const devices = await admin
+    .from("push_devices")
+    .select("id, user_id, expo_push_token")
+    .in("user_id", targets)
+    .eq("active", true)
+  if (devices.error) throw devices.error
+  if (!devices.data?.length) return
+  const response = await fetch("https://exp.host/--/api/v2/push/send", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(
+      devices.data.map((device) => ({
+        to: device.expo_push_token,
+        title,
+        body,
+        data,
+        sound: "default",
+        channelId: "curit-updates",
+      })),
+    ),
+  })
+  const result = await response.json().catch(() => ({}))
+  const tickets = Array.isArray(result?.data) ? result.data : []
+  const logs = devices.data.map((device, index) => {
+    const ticket = tickets[index] || {}
+    return {
+      user_id: device.user_id,
+      push_device_id: device.id,
+      provider_ticket_id: typeof ticket.id === "string" ? ticket.id : null,
+      status: ticket.status === "ok" ? "accepted" : "error",
+      error_code: ticket.details?.error || null,
+      error_message: ticket.message || null,
+    }
+  })
+  await admin.from("push_delivery_logs").insert(logs)
+  const invalidIds = devices.data
+    .filter((_, index) => tickets[index]?.details?.error === "DeviceNotRegistered")
+    .map((device) => device.id)
+  if (invalidIds.length)
+    await admin.from("push_devices").update({ active: false }).in("id", invalidIds)
+  if (!response.ok) throw new Error("Expo 푸시 전송 요청이 실패했습니다.")
+}
+
+async function collaborationUsers(collaborationId: string) {
+  const collaboration = await admin
+    .from("collaborations")
+    .select("creator_id, store_id")
+    .eq("id", collaborationId)
+    .maybeSingle()
+  if (collaboration.error) throw collaboration.error
+  if (!collaboration.data) return []
+  const store = await admin
+    .from("store_profiles")
+    .select("owner_id")
+    .eq("id", collaboration.data.store_id)
+    .maybeSingle()
+  if (store.error) throw store.error
+  return [
+    String(collaboration.data.creator_id || ""),
+    String(store.data?.owner_id || ""),
+  ]
+}
+
+async function sendOrderPaidPush(order: Record<string, any>) {
+  const listing = await admin
+    .from("qr_listings")
+    .select("collaboration_id")
+    .eq("id", order.listing_id)
+    .maybeSingle()
+  if (listing.error || !listing.data?.collaboration_id) return
+  const users = (await collaborationUsers(listing.data.collaboration_id)).filter(Boolean)
+  if (users.length)
+    await admin.from("notifications").insert(
+      users.map((userId) => ({
+        user_id: userId,
+        title: "새 QR 주문이 결제됐어요",
+        body: `${(order.snapshot as Record<string, any>)?.product?.name || "상품"} ${Number(order.quantity)}개 주문을 확인해 주세요.`,
+        kind: "order",
+        entity_id: listing.data!.collaboration_id,
+      })),
+    )
+  await sendPush(
+    users,
+    "새 QR 주문이 결제됐어요",
+    `${(order.snapshot as Record<string, any>)?.product?.name || "상품"} ${Number(order.quantity)}개 주문을 확인해 주세요.`,
+    { kind: "order", orderId: order.id, status: "paid" },
+  )
+}
+
+async function encryptedTossPayoutRequest(
+  path: string,
+  body: Record<string, unknown> | Record<string, unknown>[],
+  idempotencyKey: string,
+) {
+  if (PAYOUT_MODE !== "toss" || !TOSS_PAYOUT_SECRET_KEY || !TOSS_PAYOUT_SECURITY_KEY)
+    throw Object.assign(new Error("지급대행 계약 키가 설정되지 않았습니다."), {
+      status: 503,
+    })
+  const key = bytesFromHex(TOSS_PAYOUT_SECURITY_KEY)
+  const protectedHeader = {
+    alg: "dir",
+    enc: "A256GCM",
+    iat: new Date().toISOString(),
+    nonce: crypto.randomUUID(),
+  }
+  const encrypted = await new CompactEncrypt(
+    new TextEncoder().encode(JSON.stringify(body)),
+  )
+    .setProtectedHeader(protectedHeader)
+    .encrypt(key)
+  const response = await fetch(`https://api.tosspayments.com${path}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${btoa(`${TOSS_PAYOUT_SECRET_KEY}:`)}`,
+      "Content-Type": "text/plain",
+      "TossPayments-api-security-mode": "ENCRYPTION",
+      "Idempotency-Key": idempotencyKey,
+    },
+    body: encrypted,
+  })
+  const encryptedResult = await response.text()
+  let result: Record<string, any> = {}
+  try {
+    const decrypted = await compactDecrypt(encryptedResult, key)
+    result = JSON.parse(new TextDecoder().decode(decrypted.plaintext))
+  } catch {
+    throw Object.assign(new Error("지급대행 응답을 검증하지 못했습니다."), {
+      status: 502,
+    })
+  }
+  if (!response.ok)
+    throw Object.assign(new Error(result?.message || "지급대행 요청이 실패했습니다."), {
+      status: response.status >= 500 ? 502 : 400,
+      provider: result,
+    })
+  return result
+}
+
+function authorizedJobRequest(request: Request) {
+  const supplied = request.headers.get("x-curit-job-secret") || ""
+  if (!OPERATIONS_JOB_SECRET || supplied.length !== OPERATIONS_JOB_SECRET.length) return false
+  let mismatch = 0
+  for (let index = 0; index < supplied.length; index++)
+    mismatch |= supplied.charCodeAt(index) ^ OPERATIONS_JOB_SECRET.charCodeAt(index)
+  return mismatch === 0
+}
+
 async function insertPending(body: Record<string, unknown>, phone: string) {
   const qrToken = String(body.qrToken || "")
   const quantity = Number(body.quantity)
@@ -343,7 +592,390 @@ Deno.serve(async (request) => {
   const path = routePath(request)
   try {
     if (request.method === "GET" && path === "/health")
-      return json(request, { status: "ok" })
+      return json(request, {
+        status: "ok",
+        paymentMode: PAYMENT_MODE,
+        webhookReady: Boolean(TOSS_WEBHOOK_SECURITY_KEY),
+        payoutMode: PAYOUT_MODE,
+        payoutReady: Boolean(TOSS_PAYOUT_SECRET_KEY && TOSS_PAYOUT_SECURITY_KEY),
+      })
+
+    if (request.method === "POST" && path === "/api/webhooks/toss") {
+      const rawBody = await request.text()
+      await verifyTossWebhook(request, rawBody)
+      let payload: Record<string, any>
+      try {
+        payload = JSON.parse(rawBody)
+      } catch {
+        return json(request, { message: "웹훅 본문이 올바르지 않습니다." }, 400)
+      }
+      const eventType = String(payload.eventType || "")
+      const eventKey = payload.eventId
+        ? `${eventType}:${String(payload.eventId)}`
+        : `${eventType}:${await digest(rawBody)}`
+      const eventInsert = await admin
+        .from("toss_webhook_events")
+        .insert({
+          event_key: eventKey,
+          event_type: eventType,
+          transmission_id:
+            request.headers.get("tosspayments-webhook-transmission-id") || null,
+          payload,
+        })
+        .select("id")
+        .single()
+      let eventId = eventInsert.data?.id as string | undefined
+      if (eventInsert.error?.code === "23505") {
+        const existing = await admin
+          .from("toss_webhook_events")
+          .select("id, processing_status, received_at")
+          .eq("event_key", eventKey)
+          .single()
+        if (existing.error) throw existing.error
+        const retryable =
+          existing.data.processing_status === "failed" ||
+          (existing.data.processing_status === "processing" &&
+            Date.now() - new Date(existing.data.received_at).getTime() > 30_000)
+        if (!retryable)
+          return json(request, { received: true, duplicate: true })
+        eventId = existing.data.id
+        const claimed = await admin
+          .from("toss_webhook_events")
+          .update({
+            processing_status: "processing",
+            error_message: null,
+            received_at: new Date().toISOString(),
+          })
+          .eq("id", eventId)
+        if (claimed.error) throw claimed.error
+      } else if (eventInsert.error) throw eventInsert.error
+      if (!eventId) throw new Error("웹훅 처리 원장을 생성하지 못했습니다.")
+      try {
+        const paymentData = webhookPaymentData(payload)
+        if (paymentData) {
+          const paymentKey = String(paymentData.paymentKey || "")
+          if (!paymentKey) throw new Error("결제 키가 없는 웹훅입니다.")
+          const verified = await tossPayment(paymentKey)
+          const orderId = String(verified.orderId || "")
+          const order = await admin
+            .from("qr_orders")
+            .select("id, customer_phone, payment_key, amount, status")
+            .eq("id", orderId)
+            .maybeSingle()
+          if (order.error) throw order.error
+          if (!order.data) throw new Error("웹훅 주문을 찾지 못했습니다.")
+          if (
+            Number(verified.totalAmount) !== Number(order.data.amount) ||
+            (order.data.payment_key && order.data.payment_key !== paymentKey) ||
+            (TOSS_EXPECTED_MID && String(verified.mId || "") !== TOSS_EXPECTED_MID)
+          )
+            throw new Error("토스 조회 결과와 주문 정보가 일치하지 않습니다.")
+          const providerStatus = String(verified.status || "")
+          if (providerStatus === "DONE" && order.data.status === "pending") {
+            const confirmed = await admin.rpc("confirm_curit_order", {
+              p_order_id: order.data.id,
+              p_customer_phone: order.data.customer_phone,
+              p_payment_key: paymentKey,
+            })
+            if (confirmed.error) throw confirmed.error
+          } else if (providerStatus === "CANCELED") {
+            const cancellation = lastCancellation(verified)
+            const cancelled = await admin.rpc("cancel_curit_order", {
+              p_order_id: order.data.id,
+              p_reason: cancellation?.cancelReason || "토스 결제 상태 변경",
+              p_provider_status: providerStatus,
+              p_transaction_key: cancellation?.transactionKey || null,
+            })
+            if (cancelled.error) throw cancelled.error
+          }
+          const updated = await admin
+            .from("qr_orders")
+            .update({
+              provider_status: providerStatus,
+              webhook_updated_at: new Date().toISOString(),
+            })
+            .eq("id", order.data.id)
+          if (updated.error) throw updated.error
+        } else if (eventType === "CANCEL_STATUS_CHANGED") {
+          const cancel = payload.data || {}
+          const transactionKey = String(cancel.transactionKey || "")
+          const cancellation = await admin
+            .from("payment_cancellations")
+            .select("id, order_id")
+            .eq("provider_transaction_key", transactionKey)
+            .maybeSingle()
+          if (cancellation.error) throw cancellation.error
+          if (!cancellation.data) throw new Error("취소 거래를 찾지 못했습니다.")
+          const completed = String(cancel.cancelStatus || "") === "DONE"
+          const cancellationUpdate = await admin
+            .from("payment_cancellations")
+            .update({
+              status: completed ? "completed" : "failed",
+              provider_payload: cancel,
+              completed_at: completed ? new Date().toISOString() : null,
+            })
+            .eq("id", cancellation.data.id)
+          if (cancellationUpdate.error) throw cancellationUpdate.error
+          if (completed) {
+            const cancelled = await admin.rpc("cancel_curit_order", {
+              p_order_id: cancellation.data.order_id,
+              p_reason: cancel.cancelReason || "토스 비동기 취소 완료",
+              p_provider_status: "CANCELED",
+              p_transaction_key: transactionKey,
+            })
+            if (cancelled.error) throw cancelled.error
+          }
+        } else if (eventType === "payout.changed") {
+          const payout = payload.entityBody || {}
+          const providerStatus = String(payout.status || "")
+          const status =
+            providerStatus === "COMPLETED"
+              ? "completed"
+              : providerStatus === "CANCELED"
+                ? "cancelled"
+                : "failed"
+          const payoutResult = await admin
+            .from("payout_requests")
+            .update({
+              provider_payout_id: payout.id || null,
+              status,
+              provider_error: payout.error || null,
+              completed_at:
+                providerStatus === "COMPLETED" ? new Date().toISOString() : null,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("ref_payout_id", String(payout.refPayoutId || ""))
+            .select("settlement_entry_id")
+            .maybeSingle()
+          if (payoutResult.error) throw payoutResult.error
+          if (payoutResult.data?.settlement_entry_id) {
+            const siblings = await admin
+              .from("payout_requests")
+              .select("status")
+              .eq("settlement_entry_id", payoutResult.data.settlement_entry_id)
+            if (siblings.error) throw siblings.error
+            const allCompleted =
+              Boolean(siblings.data?.length) &&
+              siblings.data!.every((row) => row.status === "completed")
+            if (allCompleted)
+              await admin
+                .from("settlement_entries")
+                .update({ status: "paid", paid_at: new Date().toISOString() })
+                .eq("id", payoutResult.data.settlement_entry_id)
+          }
+        } else if (eventType === "seller.changed") {
+          const seller = payload.entityBody || {}
+          const sellerUpdate = await admin
+            .from("payout_sellers")
+            .update({
+              status: seller.status,
+              synced_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            })
+            .eq("provider_seller_id", String(seller.id || ""))
+          if (sellerUpdate.error) throw sellerUpdate.error
+        }
+        await admin
+          .from("toss_webhook_events")
+          .update({
+            processing_status: paymentData || ["CANCEL_STATUS_CHANGED", "payout.changed", "seller.changed"].includes(eventType)
+              ? "processed"
+              : "ignored",
+            processed_at: new Date().toISOString(),
+          })
+          .eq("id", eventId)
+        return json(request, { received: true })
+      } catch (error) {
+        await admin
+          .from("toss_webhook_events")
+          .update({
+            processing_status: "failed",
+            error_message: error instanceof Error ? error.message.slice(0, 500) : "unknown",
+          })
+          .eq("id", eventId)
+        throw error
+      }
+    }
+
+    if (request.method === "POST" && path === "/api/internal/push/receipts") {
+      if (!authorizedJobRequest(request))
+        return json(request, { message: "푸시 영수증 확인 권한이 없습니다." }, 401)
+      const logs = await admin
+        .from("push_delivery_logs")
+        .select("id, push_device_id, provider_ticket_id")
+        .eq("status", "accepted")
+        .not("provider_ticket_id", "is", null)
+        .order("created_at", { ascending: true })
+        .limit(1000)
+      if (logs.error) throw logs.error
+      if (!logs.data?.length) return json(request, { checked: 0 })
+      const response = await fetch("https://exp.host/--/api/v2/push/getReceipts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: logs.data.map((row) => row.provider_ticket_id) }),
+      })
+      const result = await response.json().catch(() => ({}))
+      if (!response.ok) throw Object.assign(new Error("Expo 푸시 영수증 확인이 실패했습니다."), { status: 502 })
+      let checked = 0
+      for (const log of logs.data) {
+        const receipt = result?.data?.[log.provider_ticket_id]
+        if (!receipt) continue
+        checked += 1
+        const errorCode = receipt.details?.error || null
+        await admin
+          .from("push_delivery_logs")
+          .update({
+            status: receipt.status === "ok" ? "delivered" : "error",
+            error_code: errorCode,
+            error_message: receipt.message || null,
+            checked_at: new Date().toISOString(),
+          })
+          .eq("id", log.id)
+        if (errorCode === "DeviceNotRegistered" && log.push_device_id)
+          await admin
+            .from("push_devices")
+            .update({ active: false, updated_at: new Date().toISOString() })
+            .eq("id", log.push_device_id)
+      }
+      return json(request, { checked })
+    }
+
+    if (request.method === "POST" && path === "/api/internal/payouts/sellers") {
+      if (!authorizedJobRequest(request))
+        return json(request, { message: "판매자 등록 권한이 없습니다." }, 401)
+      const body = await request.json()
+      if (body.confirm !== "REGISTER_SELLER")
+        return json(request, { message: "판매자 등록 확인값이 필요합니다." }, 400)
+      const userId = String(body.userId || "")
+      const seller = body.seller as Record<string, any>
+      if (!/^[0-9a-f-]{36}$/i.test(userId) || !seller || typeof seller !== "object")
+        return json(request, { message: "사용자와 판매자 정보를 확인해 주세요." }, 400)
+      if (!/^[A-Za-z0-9_-]{7,20}$/.test(String(seller.refSellerId || "")))
+        return json(request, { message: "판매자 참조 ID 형식을 확인해 주세요." }, 400)
+      if (!["INDIVIDUAL", "INDIVIDUAL_BUSINESS", "CORPORATE"].includes(String(seller.businessType)))
+        return json(request, { message: "판매자 유형을 확인해 주세요." }, 400)
+      if (!seller.account?.bankCode || !seller.account?.accountNumber || !seller.account?.holderName)
+        return json(request, { message: "정산 계좌 정보를 확인해 주세요." }, 400)
+      const profile = await admin.from("profiles").select("id").eq("id", userId).maybeSingle()
+      if (profile.error) throw profile.error
+      if (!profile.data) return json(request, { message: "사용자를 찾지 못했습니다." }, 404)
+      const registered = await encryptedTossPayoutRequest(
+        "/v2/sellers",
+        {
+          refSellerId: seller.refSellerId,
+          businessType: seller.businessType,
+          ...(seller.businessType === "INDIVIDUAL"
+            ? { individual: seller.individual }
+            : { company: seller.company }),
+          account: seller.account,
+          metadata: { curitUserId: userId },
+        },
+        `curit-seller-${userId}`,
+      )
+      const providerSeller = registered.entityBody || registered
+      if (!providerSeller.id || !providerSeller.status)
+        throw Object.assign(new Error("토스 판매자 응답을 확인하지 못했습니다."), { status: 502 })
+      const saved = await admin
+        .from("payout_sellers")
+        .upsert(
+          {
+            user_id: userId,
+            provider_seller_id: providerSeller.id,
+            ref_seller_id: seller.refSellerId,
+            status: providerSeller.status,
+            synced_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: "user_id" },
+        )
+        .select("user_id, ref_seller_id, status")
+        .single()
+      if (saved.error) throw saved.error
+      return json(request, { seller: saved.data }, 201)
+    }
+
+    if (request.method === "POST" && path === "/api/internal/payouts/run") {
+      if (!authorizedJobRequest(request))
+        return json(request, { message: "지급 실행 권한이 없습니다." }, 401)
+      const body = await request.json()
+      if (body.confirm !== "EXECUTE_PAYOUT")
+        return json(request, { message: "지급 실행 확인값이 필요합니다." }, 400)
+      const settlementId = String(body.settlementId || "")
+      if (!/^[0-9a-f-]{36}$/i.test(settlementId))
+        return json(request, { message: "정산 원장 식별자를 확인해 주세요." }, 400)
+      const prepared = await admin.rpc("prepare_curit_payouts", {
+        p_settlement_id: settlementId,
+      })
+      if (prepared.error) throw prepared.error
+      const rows = (prepared.data || []) as Record<string, any>[]
+      if (!rows.length)
+        return json(request, { message: "승인된 판매자 지급 정보를 찾지 못했습니다." }, 409)
+      const sellerIds = [...new Set(rows.map((row) => String(row.seller_id)))]
+      const sellers = await admin
+        .from("payout_sellers")
+        .select("id, provider_seller_id")
+        .in("id", sellerIds)
+      if (sellers.error) throw sellers.error
+      const sellerMap = new Map(
+        (sellers.data || []).map((row) => [String(row.id), String(row.provider_seller_id)]),
+      )
+      const payoutBody = rows.map((row) => ({
+        refPayoutId: row.ref_payout_id,
+        destination: sellerMap.get(String(row.seller_id)),
+        scheduleType: "EXPRESS",
+        amount: { currency: "KRW", value: Number(row.amount) },
+        transactionDescription: "큐릿정산",
+        metadata: { settlementId, beneficiaryType: row.beneficiary_type },
+      }))
+      if (payoutBody.some((row) => !row.destination))
+        return json(request, { message: "토스 판매자 식별자가 누락됐습니다." }, 409)
+      const payoutResult = await encryptedTossPayoutRequest(
+        "/v2/payouts",
+        payoutBody,
+        `curit-payout-${settlementId}`,
+      )
+      const items = Array.isArray(payoutResult?.entityBody?.items)
+        ? payoutResult.entityBody.items
+        : []
+      for (const item of items)
+        await admin
+          .from("payout_requests")
+          .update({
+            provider_payout_id: item.id,
+            status: String(item.status || "") === "COMPLETED" ? "completed" : "requested",
+            requested_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          })
+          .eq("ref_payout_id", item.refPayoutId)
+      await admin
+        .from("settlement_entries")
+        .update({ status: "ready" })
+        .eq("id", settlementId)
+      return json(request, { requested: items.length, settlementId })
+    }
+
+    const pushCollaborationMatch = path.match(
+      /^\/api\/push\/collaborations\/([0-9a-f-]{36})$/i,
+    )
+    if (request.method === "POST" && pushCollaborationMatch) {
+      const user = await appUserFor(request)
+      if (!user) return json(request, { message: "로그인이 필요합니다." }, 401)
+      const participant = await participantCollaboration(
+        user.id,
+        pushCollaborationMatch[1]!,
+      )
+      if (!participant)
+        return json(request, { message: "협업 알림 권한이 없습니다." }, 403)
+      const users = await collaborationUsers(pushCollaborationMatch[1]!)
+      const recipients = users.filter((id) => id && id !== user.id)
+      await sendPush(
+        recipients,
+        "협업 상태가 변경됐어요",
+        `현재 상태: ${participant.collaboration.status}`,
+        { kind: "collaboration", entityId: participant.collaboration.id },
+      )
+      return json(request, { sent: recipients.length })
+    }
 
     if (path === "/api/management/listings" && request.method === "GET") {
       const user = await appUserFor(request)
@@ -777,6 +1409,118 @@ Deno.serve(async (request) => {
       })
     }
 
+    const cancelOrderMatch = path.match(
+      /^\/api\/management\/orders\/(QR-[0-9a-f-]+)\/cancel$/i,
+    )
+    if (cancelOrderMatch && request.method === "POST") {
+      const user = await appUserFor(request)
+      if (!user) return json(request, { message: "로그인이 필요합니다." }, 401)
+      const order = await admin
+        .from("qr_orders")
+        .select(
+          "id, listing_id, status, payment_key, payment_provider, simulated, amount, quantity, fulfillment_status",
+        )
+        .eq("id", cancelOrderMatch[1]!)
+        .maybeSingle()
+      if (order.error) throw order.error
+      if (!order.data)
+        return json(request, { message: "주문을 찾지 못했습니다." }, 404)
+      if (order.data.status === "cancelled")
+        return json(request, { id: order.data.id, status: "cancelled", duplicate: true })
+      if (order.data.status !== "paid")
+        return json(request, { message: "결제 완료 주문만 취소할 수 있습니다." }, 409)
+      if (order.data.fulfillment_status === "delivered")
+        return json(request, { message: "이미 전달한 상품은 앱에서 취소할 수 없습니다." }, 409)
+      const listing = await admin
+        .from("qr_listings")
+        .select("collaboration_id")
+        .eq("id", order.data.listing_id)
+        .maybeSingle()
+      if (listing.error) throw listing.error
+      if (!listing.data?.collaboration_id)
+        return json(request, { message: "협업 정보를 찾지 못했습니다." }, 404)
+      const participant = await participantCollaboration(
+        user.id,
+        listing.data.collaboration_id,
+      )
+      if (!participant || participant.store.owner_id !== user.id)
+        return json(request, { message: "매장 운영자만 결제를 취소할 수 있습니다." }, 403)
+      const settlement = await admin
+        .from("settlement_entries")
+        .select("status")
+        .eq("order_id", order.data.id)
+        .maybeSingle()
+      if (settlement.error) throw settlement.error
+      if (settlement.data?.status === "paid")
+        return json(request, { message: "이미 지급된 정산 건은 운영팀 확인이 필요합니다." }, 409)
+      const body = await request.json().catch(() => ({}))
+      const reason = String(body.reason || "매장 운영자 요청")
+        .trim()
+        .slice(0, 200)
+      if (!reason)
+        return json(request, { message: "취소 사유를 입력해 주세요." }, 400)
+
+      let providerStatus = "CANCELED"
+      let transactionKey: string | null = null
+      let providerPayload: Record<string, any> = { mode: "demo" }
+      if (!order.data.simulated && order.data.payment_provider === "toss") {
+        if (!TOSS_SECRET_KEY || !order.data.payment_key)
+          return json(request, { message: "토스 결제 취소 설정을 확인해 주세요." }, 503)
+        providerPayload = await toss(
+          `/${encodeURIComponent(order.data.payment_key)}/cancel`,
+          { cancelReason: reason, cancelRequestId: `cancel-${order.data.id}` },
+          `cancel-${order.data.id}`,
+        )
+        providerStatus = String(providerPayload.status || "")
+        const cancellation = lastCancellation(providerPayload)
+        transactionKey = cancellation?.transactionKey || null
+        await admin.from("payment_cancellations").upsert(
+          {
+            order_id: order.data.id,
+            provider_transaction_key: transactionKey,
+            provider_cancel_request_id: `cancel-${order.data.id}`,
+            amount: Number(order.data.amount),
+            reason,
+            status:
+              providerStatus === "CANCELED" || cancellation?.cancelStatus === "DONE"
+                ? "completed"
+                : "in_progress",
+            provider_payload: providerPayload,
+            completed_at:
+              providerStatus === "CANCELED" || cancellation?.cancelStatus === "DONE"
+                ? new Date().toISOString()
+                : null,
+          },
+          { onConflict: "order_id" },
+        )
+        if (providerStatus !== "CANCELED" && cancellation?.cancelStatus !== "DONE")
+          return json(request, {
+            id: order.data.id,
+            status: "cancellation_pending",
+            message: "취소 승인 결과를 기다리고 있습니다.",
+          }, 202)
+      }
+      const cancelled = await admin.rpc("cancel_curit_order", {
+        p_order_id: order.data.id,
+        p_reason: reason,
+        p_provider_status: providerStatus,
+        p_transaction_key: transactionKey,
+      })
+      if (cancelled.error) throw cancelled.error
+      const users = await collaborationUsers(listing.data.collaboration_id)
+      await sendPush(
+        users,
+        "결제 취소가 완료됐어요",
+        `주문 ${order.data.id.slice(-8)}의 재고와 정산 내역이 갱신됐습니다.`,
+        { kind: "order", orderId: order.data.id, status: "cancelled" },
+      )
+      return json(request, {
+        id: order.data.id,
+        status: "cancelled",
+        amount: Number(order.data.amount),
+      })
+    }
+
     const qrMatch = path.match(/^\/api\/v1\/qr\/([^/]+)$/)
     if (request.method === "GET" && qrMatch) {
       const token = decodeURIComponent(qrMatch[1]!)
@@ -910,6 +1654,10 @@ Deno.serve(async (request) => {
         p_payment_key: "demo",
       })
       if (confirmed.error) throw confirmed.error
+      const paid = Array.isArray(confirmed.data)
+        ? confirmed.data[0]
+        : confirmed.data
+      if (paid) await sendOrderPaidPush(paid as Record<string, any>)
       const destination = qrWebUrl(qrToken)
       destination.searchParams.set("order", String(row.id))
       return json(request, { checkoutUrl: destination.href, simulated: true })
@@ -982,6 +1730,7 @@ Deno.serve(async (request) => {
         if (corrected.error) console.error(corrected.error)
         else paid = corrected.data
       }
+      await sendOrderPaidPush(paid as Record<string, any>)
       return json(request, orderResponse(paid as Record<string, unknown>))
     }
 
