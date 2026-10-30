@@ -28,7 +28,7 @@ function cors(request: Request) {
       ? origin
       : origins[0] || "",
     "Access-Control-Allow-Headers":
-      "authorization, content-type, x-client-info, apikey",
+      "authorization, content-type, x-client-info, x-curit-session, apikey",
     "Access-Control-Allow-Methods": "GET, POST, PATCH, OPTIONS",
     "Access-Control-Allow-Credentials": "true",
     Vary: "Origin",
@@ -64,11 +64,14 @@ function routePath(request: Request) {
 }
 
 async function phoneFor(request: Request) {
-  const bearer = request.headers
-    .get("authorization")
-    ?.match(/^Bearer ([A-Za-z0-9_-]{32,128})$/)?.[1]
-  if (!bearer) return ""
-  const tokenHash = await digest(bearer)
+  const sessionToken =
+    request.headers.get("x-curit-session") ||
+    request.headers
+      .get("authorization")
+      ?.match(/^Bearer ([A-Za-z0-9_-]{32,128})$/)?.[1] ||
+    ""
+  if (!sessionToken) return ""
+  const tokenHash = await digest(sessionToken)
   const { data } = await admin
     .from("customer_sessions")
     .select("customer_phone")
