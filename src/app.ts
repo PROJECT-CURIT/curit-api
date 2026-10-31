@@ -255,6 +255,20 @@ export async function buildApp({
     },
   )
 
+  app.post<{ Params: { id: string } }>(
+    "/api/checkout/:id/abandon",
+    { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const phone = await sessionPhone(request, store)
+      if (!phone)
+        return reply
+          .code(401)
+          .send({ message: "휴대폰 번호를 다시 확인해 주세요." })
+      await store.cancelOrder(request.params.id, phone)
+      return { abandoned: true }
+    },
+  )
+
   app.post<{
     Body: {
       paymentKey: string

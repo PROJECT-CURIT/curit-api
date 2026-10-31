@@ -175,6 +175,7 @@ describe("CURI:T QR commerce API", () => {
 
   it("creates a server-priced pending order before opening Toss Payments", async () => {
     await app.close()
+    store = new MemoryStore(seedListings)
     app = await buildApp({
       config: {
         ...config,
@@ -183,7 +184,7 @@ describe("CURI:T QR commerce API", () => {
         tossSecretKey: "test_sk_example",
         publicWebUrl: "https://project-curit.github.io/curit-qr-web",
       },
-      store: new MemoryStore(seedListings),
+      store,
     })
     const identity = await app.inject({
       method: "POST",
@@ -210,5 +211,36 @@ describe("CURI:T QR commerce API", () => {
       successUrl:
         "https://project-curit.github.io/curit-qr-web/?qr=demo-mug-white-gray&payment=success",
     })
+
+    const orderId = checkout.json().payment.orderId
+    const otherIdentity = await app.inject({
+      method: "POST",
+      url: "/api/auth/identity/start",
+      payload: { phone: "01099998888", consent: true },
+    })
+    const foreignAbandon = await app.inject({
+      method: "POST",
+      url: `/api/checkout/${encodeURIComponent(orderId)}/abandon`,
+      headers: {
+        authorization: `Bearer ${otherIdentity.json().accessToken}`,
+      },
+      payload: {},
+    })
+    expect(foreignAbandon.statusCode).toBe(200)
+    expect(
+      await store.getOrderForPayment(orderId, "01012345678"),
+    ).toMatchObject({ status: "pending" })
+
+    const abandoned = await app.inject({
+      method: "POST",
+      url: `/api/checkout/${encodeURIComponent(orderId)}/abandon`,
+      headers: { authorization: `Bearer ${identity.json().accessToken}` },
+      payload: {},
+    })
+    expect(abandoned.statusCode).toBe(200)
+    expect(abandoned.json()).toEqual({ abandoned: true })
+    expect(
+      await store.getOrderForPayment(orderId, "01012345678"),
+    ).toMatchObject({ status: "cancelled" })
   })
 })

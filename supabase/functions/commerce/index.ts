@@ -1728,6 +1728,25 @@ Deno.serve(async (request) => {
       return json(request, { checkoutUrl: destination.href, simulated: true })
     }
 
+    const abandonedCheckoutMatch = path.match(
+      /^\/api\/checkout\/([^/]+)\/abandon$/,
+    )
+    if (request.method === "POST" && abandonedCheckoutMatch) {
+      const orderId = decodeURIComponent(abandonedCheckoutMatch[1]!)
+      const { error } = await admin
+        .from("qr_orders")
+        .update({
+          status: "cancelled",
+          cancelled_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", orderId)
+        .eq("customer_phone", phone)
+        .eq("status", "pending")
+      if (error) throw error
+      return json(request, { abandoned: true })
+    }
+
     if (request.method === "POST" && path === "/api/payments/confirm") {
       if (PAYMENT_MODE !== "toss")
         return json(request, { message: "현재 테스트 결제 모드입니다." }, 409)
