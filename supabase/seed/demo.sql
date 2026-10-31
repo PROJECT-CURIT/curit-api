@@ -9,9 +9,15 @@ DECLARE
   demo_store_id CONSTANT UUID := '10000000-0000-4000-8000-000000000001';
   demo_project_id CONSTANT UUID := '20000000-0000-4000-8000-000000000001';
   demo_item_id CONSTANT UUID := '30000000-0000-4000-8000-000000000001';
+  demo_mug_item_id CONSTANT UUID := '30000000-0000-4000-8000-000000000002';
+  demo_bowl_item_id CONSTANT UUID := '30000000-0000-4000-8000-000000000003';
   demo_collaboration_id CONSTANT UUID := '40000000-0000-4000-8000-000000000001';
   demo_listing_id CONSTANT UUID := '50000000-0000-4000-8000-000000000001';
+  demo_mug_listing_id CONSTANT UUID := '50000000-0000-4000-8000-000000000002';
+  demo_bowl_listing_id CONSTANT UUID := '50000000-0000-4000-8000-000000000003';
   demo_qr_token CONSTANT TEXT := 'demo-dessert-plate';
+  demo_mug_qr_token CONSTANT TEXT := 'demo-mug-white-gray';
+  demo_bowl_qr_token CONSTANT TEXT := 'demo-bowl-set-2026';
 BEGIN
   SELECT id INTO creator_user_id
   FROM auth.users
@@ -112,19 +118,27 @@ BEGIN
   INSERT INTO public.project_items (
     id, project_id, name, description, item_type, sale_mode,
     price, stock, image_path, material, width_mm, height_mm
-  ) VALUES (
-    demo_item_id,
-    demo_project_id,
-    '제주빛 디저트 플레이트',
+  ) VALUES
+  (
+    demo_item_id, demo_project_id, '제주빛 디저트 플레이트',
     '제주의 모래빛을 담은 작은 세라믹 디저트 플레이트입니다.',
-    'goods',
-    'display_sale',
-    55000,
-    8,
+    'goods', 'display_sale', 55000, 8,
     'https://project-curit.github.io/curit-qr-web/artworks/dessert-plate.jpg',
-    '세라믹',
-    180,
-    180
+    '세라믹', 180, 180
+  ),
+  (
+    demo_mug_item_id, demo_project_id, '머그컵 (화이트·그레이)',
+    '손으로 빚어 각기 다른 결을 지닌 세라믹 머그컵입니다.',
+    'goods', 'display_sale', 35000, 12,
+    'https://project-curit.github.io/curit-qr-web/artworks/reference-1.jpg',
+    '세라믹', 90, 100
+  ),
+  (
+    demo_bowl_item_id, demo_project_id, '볼 세트 (2개)',
+    '밥과 국, 디저트까지 편안하게 담을 수 있는 2인 볼 세트입니다.',
+    'goods', 'display_sale', 82000, 6,
+    'https://project-curit.github.io/curit-qr-web/artworks/bowl-set.jpg',
+    '세라믹', 160, 80
   )
   ON CONFLICT (id) DO UPDATE SET
     name = EXCLUDED.name,
@@ -218,6 +232,100 @@ BEGIN
     demo_collaboration_id,
     demo_qr_token
   )
+  ON CONFLICT (id) DO UPDATE SET
+    qr_token_hash = EXCLUDED.qr_token_hash,
+    token_hint = EXCLUDED.token_hint,
+    sale_status = 'active',
+    price = EXCLUDED.price,
+    stock = EXCLUDED.stock,
+    snapshot = EXCLUDED.snapshot,
+    project_item_id = EXCLUDED.project_item_id,
+    collaboration_id = EXCLUDED.collaboration_id,
+    qr_token_value = EXCLUDED.qr_token_value,
+    updated_at = NOW();
+
+  INSERT INTO public.qr_listings (
+    id, qr_token_hash, token_hint, sale_status, price, stock, snapshot,
+    project_item_id, collaboration_id, qr_token_value
+  )
+  SELECT
+    demo_mug_listing_id,
+    encode(digest(demo_mug_qr_token, 'sha256'), 'hex'),
+    right(demo_mug_qr_token, 12),
+    'active',
+    35000,
+    12,
+    (snapshot - 'qrToken' - 'requestId' - 'product') || jsonb_build_object(
+      'qrToken', demo_mug_qr_token,
+      'requestId', 'exhibition-heuk-memory-mug-2026-10',
+      'product', jsonb_build_object(
+        'artworkId', demo_mug_item_id::text,
+        'projectId', 0,
+        'goodsIndex', 0,
+        'name', '머그컵 (화이트·그레이)',
+        'artist', '김서연',
+        'price', 35000,
+        'stock', 12,
+        'image', 'https://project-curit.github.io/curit-qr-web/artworks/reference-1.jpg',
+        'description', '손으로 빚어 각기 다른 결을 지닌 세라믹 머그컵입니다.',
+        'composition', '세라믹 머그컵 1개',
+        'care', '전자레인지 사용 가능 · 식기세척기보다 손세척을 권장합니다.',
+        'pickupMode', 'immediate',
+        'exhibitionEnd', ''
+      )
+    ),
+    demo_mug_item_id,
+    demo_collaboration_id,
+    demo_mug_qr_token
+  FROM public.qr_listings
+  WHERE id = demo_listing_id
+  ON CONFLICT (id) DO UPDATE SET
+    qr_token_hash = EXCLUDED.qr_token_hash,
+    token_hint = EXCLUDED.token_hint,
+    sale_status = 'active',
+    price = EXCLUDED.price,
+    stock = EXCLUDED.stock,
+    snapshot = EXCLUDED.snapshot,
+    project_item_id = EXCLUDED.project_item_id,
+    collaboration_id = EXCLUDED.collaboration_id,
+    qr_token_value = EXCLUDED.qr_token_value,
+    updated_at = NOW();
+
+  INSERT INTO public.qr_listings (
+    id, qr_token_hash, token_hint, sale_status, price, stock, snapshot,
+    project_item_id, collaboration_id, qr_token_value
+  )
+  SELECT
+    demo_bowl_listing_id,
+    encode(digest(demo_bowl_qr_token, 'sha256'), 'hex'),
+    right(demo_bowl_qr_token, 12),
+    'active',
+    82000,
+    6,
+    (snapshot - 'qrToken' - 'requestId' - 'product') || jsonb_build_object(
+      'qrToken', demo_bowl_qr_token,
+      'requestId', 'exhibition-heuk-memory-bowl-2026-10',
+      'product', jsonb_build_object(
+        'artworkId', demo_bowl_item_id::text,
+        'projectId', 0,
+        'goodsIndex', 1,
+        'name', '볼 세트 (2개)',
+        'artist', '김서연',
+        'price', 82000,
+        'stock', 6,
+        'image', 'https://project-curit.github.io/curit-qr-web/artworks/bowl-set.jpg',
+        'description', '밥과 국, 디저트까지 편안하게 담을 수 있는 2인 볼 세트입니다.',
+        'composition', '세라믹 볼 2개',
+        'care', '급격한 온도 변화와 강한 충격을 피해주세요.',
+        'pickupMode', 'immediate',
+        'exhibitionEnd', ''
+      )
+    ),
+    demo_bowl_item_id,
+    demo_collaboration_id,
+    demo_bowl_qr_token
+  FROM public.qr_listings
+  WHERE id = demo_listing_id
   ON CONFLICT (id) DO UPDATE SET
     qr_token_hash = EXCLUDED.qr_token_hash,
     token_hint = EXCLUDED.token_hint,

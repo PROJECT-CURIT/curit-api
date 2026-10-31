@@ -65,7 +65,7 @@ export const seedListings: SeedListing[] = [
         artworkId: "0-1",
         projectId: 0,
         goodsIndex: 1,
-        name: "불 세트 (2개)",
+        name: "볼 세트 (2개)",
         artist: "김서연",
         price: 82000,
         stock: 6,
