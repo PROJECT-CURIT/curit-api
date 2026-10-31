@@ -51,6 +51,7 @@ pnpm build
 - 앱 인증·사용자 데이터·이미지: Supabase Auth, PostgreSQL RLS, Storage
 - QR 공개 상품·주문: Fastify API 또는 `supabase/functions/commerce`
 - 결제: 토스페이먼츠 SDK v2 요청 → 서버 승인 → 재고 원자적 차감
+- 결제창 이탈: 본인의 pending 주문만 cancelled 처리하며 재고·정산 원장은 변경하지 않음
 - 정산: 결제 승인과 같은 트랜잭션에서 참여자별 정산 원장 생성
 - 상품별 QR: 승인된 협업의 전시·판매 상품만 앱에서 발급하며, 매장·작가 본인 JWT를 서버에서 다시 검증
 

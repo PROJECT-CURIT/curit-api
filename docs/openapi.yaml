@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: CURI:T QR Commerce API
-  version: 0.2.0
+  version: 0.2.1
   description: QR 방문객 구매와 인증 사용자용 상품·수령 관리 API
 servers:
   - url: http://localhost:4100
@@ -74,6 +74,18 @@ paths:
         "200": { description: 결제 요청용 주문과 성공·실패 URL }
         "401": { description: 연락처 세션 없음 }
         "409": { description: 판매 전 또는 재고 부족 }
+  /api/checkout/{id}/abandon:
+    post:
+      summary: 구매자가 닫은 미결제 주문 정리
+      description: 현재 연락처 세션이 소유한 pending 주문만 cancelled로 전환하며 재고와 정산 원장은 변경하지 않습니다.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: 미결제 주문 정리 완료. 이미 처리됐거나 다른 연락처의 주문이어도 멱등 응답 }
+        "401": { description: 연락처 세션 없음 }
   /api/payments/confirm:
     post:
       summary: 토스페이먼츠 승인 후 주문·재고·정산 원장 확정
