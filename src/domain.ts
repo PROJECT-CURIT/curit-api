@@ -73,6 +73,11 @@ export type CreateOrderInput = {
 
 export interface CommerceStore {
   getListing(qrToken: string): Promise<QrSnapshot | null>
+  recordListingView(
+    qrToken: string,
+    visitorHash: string,
+    viewedOn: string,
+  ): Promise<void>
   createSession(
     token: string,
     customerPhone: string,

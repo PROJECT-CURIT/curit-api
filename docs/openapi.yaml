@@ -23,6 +23,11 @@ paths:
           name: token
           required: true
           schema: { type: string, minLength: 12, maxLength: 128 }
+        - in: header
+          name: x-curit-visitor-id
+          required: false
+          description: 브라우저가 생성한 익명 식별자. 서버에서 해시한 뒤 상품별 일간 순방문 집계에만 사용합니다.
+          schema: { type: string, minLength: 16, maxLength: 128 }
       responses:
         "200":
           description: 매장·작가·상품·재고 snapshot

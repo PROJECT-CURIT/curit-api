@@ -39,7 +39,7 @@ function cors(request: Request) {
       ? origin
       : origins[0] || "",
     "Access-Control-Allow-Headers":
-      "authorization, content-type, x-client-info, x-curit-session, x-curit-job-secret, apikey, tosspayments-webhook-signature, tosspayments-webhook-transmission-time, tosspayments-webhook-transmission-id",
+      "authorization, content-type, x-client-info, x-curit-session, x-curit-visitor-id, x-curit-job-secret, apikey, tosspayments-webhook-signature, tosspayments-webhook-transmission-time, tosspayments-webhook-transmission-id",
     "Access-Control-Allow-Methods": "GET, POST, PATCH, OPTIONS",
     "Access-Control-Allow-Credentials": "true",
     Vary: "Origin",
@@ -125,6 +125,7 @@ function managedListing(row: Record<string, unknown>) {
     imageUrl: snapshot?.product?.image || "",
     price: Number(row.price),
     stock: Number(row.stock),
+    viewCount: Number(row.view_count || 0),
     status:
       row.sale_status === "active"
         ? Number(row.stock) > 0
@@ -1030,7 +1031,7 @@ Deno.serve(async (request) => {
       const { data, error } = await admin
         .from("qr_listings")
         .select(
-          "id, qr_token_value, token_hint, project_item_id, collaboration_id, sale_status, price, stock, snapshot",
+          "id, qr_token_value, token_hint, project_item_id, collaboration_id, sale_status, price, stock, view_count, snapshot",
         )
         .in("collaboration_id", collaborationIds)
         .order("updated_at", { ascending: false })
@@ -1079,6 +1080,7 @@ Deno.serve(async (request) => {
               : "",
             price: Number(item.price),
             stock: Number(item.stock),
+            viewCount: 0,
             status: "PAUSED",
             pickupMode:
               item.item_type === "artwork" ? "exhibition" : "immediate",
@@ -1155,7 +1157,7 @@ Deno.serve(async (request) => {
       const existing = await admin
         .from("qr_listings")
         .select(
-          "id, qr_token_value, token_hint, project_item_id, collaboration_id, sale_status, price, stock, snapshot",
+          "id, qr_token_value, token_hint, project_item_id, collaboration_id, sale_status, price, stock, view_count, snapshot",
         )
         .eq("collaboration_id", collaborationId)
         .eq("project_item_id", projectItemId)
@@ -1249,7 +1251,7 @@ Deno.serve(async (request) => {
           snapshot,
         })
         .select(
-          "id, qr_token_value, token_hint, project_item_id, collaboration_id, sale_status, price, stock, snapshot",
+          "id, qr_token_value, token_hint, project_item_id, collaboration_id, sale_status, price, stock, view_count, snapshot",
         )
         .single()
       if (inserted.error) throw inserted.error
@@ -1344,7 +1346,7 @@ Deno.serve(async (request) => {
         .update(updates)
         .eq("id", listing.data.id)
         .select(
-          "id, qr_token_value, token_hint, project_item_id, collaboration_id, sale_status, price, stock, snapshot",
+          "id, qr_token_value, token_hint, project_item_id, collaboration_id, sale_status, price, stock, view_count, snapshot",
         )
         .single()
       if (updated.error) throw updated.error
@@ -1572,7 +1574,7 @@ Deno.serve(async (request) => {
         return json(request, { message: "구매 링크를 확인해 주세요." }, 404)
       const { data, error } = await admin
         .from("qr_listings")
-        .select("stock, price, sale_status, snapshot")
+        .select("id, stock, price, sale_status, snapshot")
         .eq("qr_token_hash", await digest(token))
         .maybeSingle()
       if (error) throw error
@@ -1582,6 +1584,25 @@ Deno.serve(async (request) => {
           { message: "QR에 연결된 상품을 찾을 수 없어요." },
           404,
         )
+      const visitorId = request.headers.get("x-curit-visitor-id") || ""
+      if (/^[A-Za-z0-9_-]{16,128}$/.test(visitorId)) {
+        const viewedOn = new Date(Date.now() + 9 * 60 * 60 * 1000)
+          .toISOString()
+          .slice(0, 10)
+        const view = await admin.from("qr_view_events").upsert(
+          {
+            listing_id: data.id,
+            visitor_hash: await digest(visitorId),
+            viewed_on: viewedOn,
+          },
+          {
+            onConflict: "listing_id,visitor_hash,viewed_on",
+            ignoreDuplicates: true,
+          },
+        )
+        if (view.error)
+          console.warn("QR view analytics failed", view.error.message)
+      }
       return json(request, {
         ...data.snapshot,
         qrToken: token,

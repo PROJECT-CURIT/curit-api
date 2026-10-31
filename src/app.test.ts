@@ -24,11 +24,13 @@ const multiOriginConfig: AppConfig = {
 
 describe("CURI:T QR commerce API", () => {
   let app: Awaited<ReturnType<typeof buildApp>>
+  let store: MemoryStore
 
   beforeEach(async () => {
+    store = new MemoryStore(seedListings)
     app = await buildApp({
       config,
-      store: new MemoryStore(seedListings),
+      store,
     })
   })
 
@@ -48,6 +50,25 @@ describe("CURI:T QR commerce API", () => {
     expect(plate.statusCode).toBe(200)
     expect(mug.json().product.artworkId).toBe("0-0")
     expect(plate.json().product.artworkId).toBe("0-2")
+  })
+
+  it("counts one anonymous browser once per listing and day", async () => {
+    const visitor = "11111111-1111-4111-8111-111111111111"
+    for (let index = 0; index < 2; index += 1)
+      await app.inject({
+        method: "GET",
+        url: "/api/v1/qr/demo-mug-white-gray",
+        headers: { "x-curit-visitor-id": visitor },
+      })
+    await app.inject({
+      method: "GET",
+      url: "/api/v1/qr/demo-mug-white-gray",
+      headers: {
+        "x-curit-visitor-id": "22222222-2222-4222-8222-222222222222",
+      },
+    })
+
+    expect(store.getListingViewCount("demo-mug-white-gray")).toBe(2)
   })
 
   it("allows both QR web and mobile web origins", async () => {

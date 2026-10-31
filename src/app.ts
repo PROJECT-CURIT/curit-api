@@ -10,7 +10,7 @@ import {
   type CommerceStore,
   type CreateOrderInput,
 } from "./domain.js"
-import { assertQrToken } from "./token.js"
+import { assertQrToken, hashQrToken } from "./token.js"
 import { cancelTossPayment, confirmTossPayment, TossError } from "./toss.js"
 
 const SESSION_COOKIE = "curit_session"
@@ -102,6 +102,16 @@ export async function buildApp({
         return reply
           .code(404)
           .send({ message: "QR에 연결된 상품을 찾을 수 없어요." })
+      }
+      const visitorId = request.headers["x-curit-visitor-id"]
+      if (
+        typeof visitorId === "string" &&
+        /^[A-Za-z0-9_-]{16,128}$/.test(visitorId)
+      ) {
+        const viewedOn = new Date(Date.now() + 9 * 60 * 60 * 1000)
+          .toISOString()
+          .slice(0, 10)
+        await store.recordListingView(token, hashQrToken(visitorId), viewedOn)
       }
       return reply.header("Cache-Control", "no-store").send(listing)
     },

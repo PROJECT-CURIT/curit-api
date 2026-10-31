@@ -105,6 +105,20 @@ export class PostgresStore implements CommerceStore {
     }
   }
 
+  async recordListingView(
+    qrToken: string,
+    visitorHash: string,
+    viewedOn: string,
+  ) {
+    await this.sql`
+      INSERT INTO qr_view_events (listing_id, visitor_hash, viewed_on)
+      SELECT id, ${visitorHash}, ${viewedOn}::date
+      FROM qr_listings
+      WHERE qr_token_hash = ${hashQrToken(qrToken)}
+      ON CONFLICT (listing_id, visitor_hash, viewed_on) DO NOTHING
+    `
+  }
+
   async createSession(token: string, customerPhone: string, expiresAt: Date) {
     await this.sql`
       INSERT INTO customer_sessions (token_hash, customer_phone, expires_at)
