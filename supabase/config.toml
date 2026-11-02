@@ -1,2 +1,6 @@
 [functions.commerce]
 verify_jwt = false
+
+[auth]
+site_url = "curit://auth/callback"
+additional_redirect_urls = ["curit://auth/callback", "curit://**"]
