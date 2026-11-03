@@ -34,7 +34,9 @@ export class MemoryStore implements CommerceStore {
 
   async getListing(qrToken: string) {
     const listing = this.listings.get(qrToken)
-    return listing ? clone(listing) : null
+    return listing
+      ? { ...clone(listing), viewCount: this.viewCounts.get(qrToken) || 0 }
+      : null
   }
 
   async recordListingView(

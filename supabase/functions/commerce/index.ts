@@ -1574,7 +1574,7 @@ Deno.serve(async (request) => {
         return json(request, { message: "구매 링크를 확인해 주세요." }, 404)
       const { data, error } = await admin
         .from("qr_listings")
-        .select("id, stock, price, sale_status, snapshot")
+        .select("id, stock, price, sale_status, view_count, snapshot")
         .eq("qr_token_hash", await digest(token))
         .maybeSingle()
       if (error) throw error
@@ -1603,9 +1603,17 @@ Deno.serve(async (request) => {
         if (view.error)
           console.warn("QR view analytics failed", view.error.message)
       }
+      const count = await admin
+        .from("qr_listings")
+        .select("view_count")
+        .eq("id", data.id)
+        .single()
+      if (count.error)
+        console.warn("QR view count read failed", count.error.message)
       return json(request, {
         ...data.snapshot,
         qrToken: token,
+        viewCount: Number(count.data?.view_count ?? data.view_count ?? 0),
         saleStatus: data.sale_status,
         product: {
           ...data.snapshot.product,

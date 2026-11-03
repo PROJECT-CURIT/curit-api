@@ -69,6 +69,21 @@ describe("CURI:T QR commerce API", () => {
     })
 
     expect(store.getListingViewCount("demo-mug-white-gray")).toBe(2)
+
+    const counted = await app.inject({
+      method: "GET",
+      url: "/api/v1/qr/demo-mug-white-gray",
+      headers: { "x-curit-visitor-id": visitor },
+    })
+    expect(counted.json().viewCount).toBe(2)
+
+    const otherProduct = await app.inject({
+      method: "GET",
+      url: "/api/v1/qr/demo-dessert-plate",
+      headers: { "x-curit-visitor-id": visitor },
+    })
+    expect(otherProduct.json().viewCount).toBe(1)
+    expect(store.getListingViewCount("demo-mug-white-gray")).toBe(2)
   })
 
   it("allows both QR web and mobile web origins", async () => {

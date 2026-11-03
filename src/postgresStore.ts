@@ -13,6 +13,7 @@ type ListingRow = {
   id: string
   stock: number
   price: number
+  view_count: number
   sale_status: "preparing" | "active"
   snapshot: QrSnapshot
 }
@@ -92,7 +93,7 @@ export class PostgresStore implements CommerceStore {
 
   async getListing(qrToken: string) {
     const rows = await this.sql<ListingRow[]>`
-      SELECT id, stock, price, sale_status, snapshot
+      SELECT id, stock, price, sale_status, view_count, snapshot
       FROM qr_listings WHERE qr_token_hash = ${hashQrToken(qrToken)} LIMIT 1
     `
     const row = rows[0]
@@ -100,6 +101,7 @@ export class PostgresStore implements CommerceStore {
     return {
       ...row.snapshot,
       qrToken,
+      viewCount: Number(row.view_count || 0),
       saleStatus: row.sale_status,
       product: { ...row.snapshot.product, price: row.price, stock: row.stock },
     }

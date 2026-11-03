@@ -97,7 +97,7 @@ export async function buildApp({
       } catch {
         return reply.code(404).send({ message: "구매 링크를 확인해 주세요." })
       }
-      const listing = await store.getListing(token)
+      let listing = await store.getListing(token)
       if (!listing) {
         return reply
           .code(404)
@@ -112,6 +112,7 @@ export async function buildApp({
           .toISOString()
           .slice(0, 10)
         await store.recordListingView(token, hashQrToken(visitorId), viewedOn)
+        listing = (await store.getListing(token)) || listing
       }
       return reply.header("Cache-Control", "no-store").send(listing)
     },

@@ -4,6 +4,7 @@ export type SaleStatus = "preparing" | "active"
 export type QrSnapshot = {
   v: 1
   qrToken: string
+  viewCount?: number
   storeId: string
   requestId: string
   returnUrl: string
