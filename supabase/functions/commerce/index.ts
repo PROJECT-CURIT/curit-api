@@ -1623,6 +1623,59 @@ Deno.serve(async (request) => {
       })
     }
 
+    const qrPurchaseIntentMatch = path.match(
+      /^\/api\/v1\/qr\/([^/]+)\/purchase-intent$/,
+    )
+    if (
+      (request.method === "GET" || request.method === "POST") &&
+      qrPurchaseIntentMatch
+    ) {
+      const token = decodeURIComponent(qrPurchaseIntentMatch[1]!)
+      if (!/^[A-Za-z0-9_-]{12,128}$/.test(token))
+        return json(request, { message: "구매 링크를 확인해 주세요." }, 404)
+      const listing = await admin
+        .from("qr_listings")
+        .select("id")
+        .eq("qr_token_hash", await digest(token))
+        .maybeSingle()
+      if (listing.error) throw listing.error
+      if (!listing.data)
+        return json(
+          request,
+          { message: "QR에 연결된 상품을 찾을 수 없어요." },
+          404,
+        )
+      if (request.method === "POST") {
+        const visitorId = request.headers.get("x-curit-visitor-id") || ""
+        if (!/^[A-Za-z0-9_-]{16,128}$/.test(visitorId))
+          return json(request, { message: "방문 정보를 확인해 주세요." }, 400)
+        const intendedOn = new Date(Date.now() + 9 * 60 * 60 * 1000)
+          .toISOString()
+          .slice(0, 10)
+        const event = await admin.from("qr_purchase_intent_events").upsert(
+          {
+            listing_id: listing.data.id,
+            visitor_hash: await digest(visitorId),
+            intended_on: intendedOn,
+          },
+          {
+            onConflict: "listing_id,visitor_hash,intended_on",
+            ignoreDuplicates: true,
+          },
+        )
+        if (event.error) throw event.error
+      }
+      const count = await admin
+        .from("qr_purchase_intent_events")
+        .select("id", { count: "exact", head: true })
+        .eq("listing_id", listing.data.id)
+      if (count.error) throw count.error
+      return json(request, {
+        qrToken: token,
+        purchaseIntentCount: count.count || 0,
+      })
+    }
+
     const fieldViewMatch = path.match(
       /^\/api\/v1\/field-products\/([^/]+)\/view$/,
     )
@@ -1660,6 +1713,55 @@ Deno.serve(async (request) => {
         .eq("product_id", productId)
       if (count.error) throw count.error
       return json(request, { productId, viewCount: count.count || 0 })
+    }
+
+    const fieldPurchaseIntentMatch = path.match(
+      /^\/api\/v1\/field-products\/([^/]+)\/purchase-intent$/,
+    )
+    if (
+      (request.method === "GET" || request.method === "POST") &&
+      fieldPurchaseIntentMatch
+    ) {
+      const productId = decodeURIComponent(fieldPurchaseIntentMatch[1]!)
+      const allowed = new Set([
+        "kendama",
+        "dango-keyring",
+        "octopus-keyring",
+        "poetry-postcards",
+      ])
+      if (!allowed.has(productId))
+        return json(request, { message: "상품 링크를 확인해 주세요." }, 404)
+      if (request.method === "POST") {
+        const visitorId = request.headers.get("x-curit-visitor-id") || ""
+        if (!/^[A-Za-z0-9_-]{16,128}$/.test(visitorId))
+          return json(request, { message: "방문 정보를 확인해 주세요." }, 400)
+        const intendedOn = new Date(Date.now() + 9 * 60 * 60 * 1000)
+          .toISOString()
+          .slice(0, 10)
+        const event = await admin
+          .from("field_product_purchase_intent_events")
+          .upsert(
+            {
+              product_id: productId,
+              visitor_hash: await digest(visitorId),
+              intended_on: intendedOn,
+            },
+            {
+              onConflict: "product_id,visitor_hash,intended_on",
+              ignoreDuplicates: true,
+            },
+          )
+        if (event.error) throw event.error
+      }
+      const count = await admin
+        .from("field_product_purchase_intent_events")
+        .select("id", { count: "exact", head: true })
+        .eq("product_id", productId)
+      if (count.error) throw count.error
+      return json(request, {
+        productId,
+        purchaseIntentCount: count.count || 0,
+      })
     }
 
     if (request.method === "POST" && path === "/api/auth/identity/start") {

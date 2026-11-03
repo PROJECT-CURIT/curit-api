@@ -33,6 +33,64 @@ paths:
           description: 매장·작가·상품·재고 snapshot
         "404":
           description: 존재하지 않거나 폐기된 QR
+  /api/v1/qr/{token}/purchase-intent:
+    get:
+      summary: QR 상품의 누적 구매 화면 진입 인원 조회
+      parameters:
+        - in: path
+          name: token
+          required: true
+          schema: { type: string, minLength: 12, maxLength: 128 }
+      responses:
+        "200": { description: 상품별 구매 의향 인원 }
+        "404": { description: 존재하지 않거나 폐기된 QR }
+    post:
+      summary: QR 상품의 구매 화면 진입 기록
+      description: 같은 익명 브라우저는 상품별·한국 날짜별로 한 번만 집계합니다. 결제 완료 주문과는 별도 지표입니다.
+      parameters:
+        - in: path
+          name: token
+          required: true
+          schema: { type: string, minLength: 12, maxLength: 128 }
+        - in: header
+          name: x-curit-visitor-id
+          required: true
+          schema: { type: string, minLength: 16, maxLength: 128 }
+      responses:
+        "200": { description: 갱신된 상품별 구매 의향 인원 }
+        "400": { description: 익명 방문자 정보 오류 }
+        "404": { description: 존재하지 않거나 폐기된 QR }
+  /api/v1/field-products/{productId}/purchase-intent:
+    get:
+      summary: 현장 판매 상품의 누적 구매 화면 진입 인원 조회
+      parameters:
+        - in: path
+          name: productId
+          required: true
+          schema:
+            type: string
+            enum: [kendama, dango-keyring, octopus-keyring, poetry-postcards]
+      responses:
+        "200": { description: 상품별 구매 의향 인원 }
+        "404": { description: 등록되지 않은 현장 판매 상품 }
+    post:
+      summary: 현장 판매 상품의 구매 화면 진입 기록
+      description: 같은 익명 브라우저는 상품별·한국 날짜별로 한 번만 집계합니다. 실제 계좌이체 여부와는 별도 지표입니다.
+      parameters:
+        - in: path
+          name: productId
+          required: true
+          schema:
+            type: string
+            enum: [kendama, dango-keyring, octopus-keyring, poetry-postcards]
+        - in: header
+          name: x-curit-visitor-id
+          required: true
+          schema: { type: string, minLength: 16, maxLength: 128 }
+      responses:
+        "200": { description: 갱신된 상품별 구매 의향 인원 }
+        "400": { description: 익명 방문자 정보 오류 }
+        "404": { description: 등록되지 않은 현장 판매 상품 }
   /api/auth/session:
     get:
       summary: 주문 조회용 연락처 세션 확인

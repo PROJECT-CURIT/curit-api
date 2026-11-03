@@ -139,6 +139,55 @@ export class PostgresStore implements CommerceStore {
     return Number(rows[0]?.count || 0)
   }
 
+  async getListingPurchaseIntentCount(qrToken: string) {
+    const rows = await this.sql<{ count: number }[]>`
+      SELECT COUNT(*)::int AS count
+      FROM qr_purchase_intent_events event
+      JOIN qr_listings listing ON listing.id = event.listing_id
+      WHERE listing.qr_token_hash = ${hashQrToken(qrToken)}
+    `
+    return Number(rows[0]?.count || 0)
+  }
+
+  async recordListingPurchaseIntent(
+    qrToken: string,
+    visitorHash: string,
+    intendedOn: string,
+  ) {
+    await this.sql`
+      INSERT INTO qr_purchase_intent_events
+        (listing_id, visitor_hash, intended_on)
+      SELECT id, ${visitorHash}, ${intendedOn}::date
+      FROM qr_listings
+      WHERE qr_token_hash = ${hashQrToken(qrToken)}
+      ON CONFLICT (listing_id, visitor_hash, intended_on) DO NOTHING
+    `
+    return this.getListingPurchaseIntentCount(qrToken)
+  }
+
+  async getFieldProductPurchaseIntentCount(productId: string) {
+    const rows = await this.sql<{ count: number }[]>`
+      SELECT COUNT(*)::int AS count
+      FROM field_product_purchase_intent_events
+      WHERE product_id = ${productId}
+    `
+    return Number(rows[0]?.count || 0)
+  }
+
+  async recordFieldProductPurchaseIntent(
+    productId: string,
+    visitorHash: string,
+    intendedOn: string,
+  ) {
+    await this.sql`
+      INSERT INTO field_product_purchase_intent_events
+        (product_id, visitor_hash, intended_on)
+      VALUES (${productId}, ${visitorHash}, ${intendedOn}::date)
+      ON CONFLICT (product_id, visitor_hash, intended_on) DO NOTHING
+    `
+    return this.getFieldProductPurchaseIntentCount(productId)
+  }
+
   async createSession(token: string, customerPhone: string, expiresAt: Date) {
     await this.sql`
       INSERT INTO customer_sessions (token_hash, customer_phone, expires_at)

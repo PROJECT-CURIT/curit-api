@@ -101,6 +101,66 @@ describe("CURI:T QR commerce API", () => {
     expect((await open("poetry-postcards")).json().viewCount).toBe(1)
   })
 
+  it("counts field-sale purchase intent separately from detail views", async () => {
+    const visitor = "44444444-4444-4444-8444-444444444444"
+    const intent = (productId: string) =>
+      app.inject({
+        method: "POST",
+        url: `/api/v1/field-products/${productId}/purchase-intent`,
+        headers: { "x-curit-visitor-id": visitor },
+        payload: {},
+      })
+
+    await app.inject({
+      method: "GET",
+      url: "/api/v1/field-products/poetry-postcards/view",
+      headers: { "x-curit-visitor-id": visitor },
+    })
+    expect((await intent("poetry-postcards")).json().purchaseIntentCount).toBe(
+      1,
+    )
+    expect((await intent("poetry-postcards")).json().purchaseIntentCount).toBe(
+      1,
+    )
+    expect((await intent("dango-keyring")).json().purchaseIntentCount).toBe(1)
+
+    const poetryCount = await app.inject({
+      method: "GET",
+      url: "/api/v1/field-products/poetry-postcards/purchase-intent",
+    })
+    expect(poetryCount.json()).toMatchObject({
+      productId: "poetry-postcards",
+      purchaseIntentCount: 1,
+    })
+  })
+
+  it("counts QR listing purchase intent once per browser and day", async () => {
+    const visitor = "55555555-5555-4555-8555-555555555555"
+    const intent = (token: string) =>
+      app.inject({
+        method: "POST",
+        url: `/api/v1/qr/${token}/purchase-intent`,
+        headers: { "x-curit-visitor-id": visitor },
+        payload: {},
+      })
+
+    expect(
+      (await intent("demo-mug-white-gray")).json().purchaseIntentCount,
+    ).toBe(1)
+    expect(
+      (await intent("demo-mug-white-gray")).json().purchaseIntentCount,
+    ).toBe(1)
+    expect(
+      (await intent("demo-dessert-plate")).json().purchaseIntentCount,
+    ).toBe(1)
+
+    const count = await app.inject({
+      method: "GET",
+      url: "/api/v1/qr/demo-mug-white-gray/purchase-intent",
+    })
+    expect(count.json().purchaseIntentCount).toBe(1)
+  })
+
   it("allows both QR web and mobile web origins", async () => {
     await app.close()
     app = await buildApp({

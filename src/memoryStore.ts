@@ -28,6 +28,10 @@ export class MemoryStore implements CommerceStore {
   private readonly viewCounts = new Map<string, number>()
   private readonly fieldViewEvents = new Set<string>()
   private readonly fieldViewCounts = new Map<string, number>()
+  private readonly listingPurchaseIntentEvents = new Set<string>()
+  private readonly listingPurchaseIntentCounts = new Map<string, number>()
+  private readonly fieldPurchaseIntentEvents = new Set<string>()
+  private readonly fieldPurchaseIntentCounts = new Map<string, number>()
 
   constructor(seeds: SeedListing[]) {
     for (const seed of seeds)
@@ -71,6 +75,47 @@ export class MemoryStore implements CommerceStore {
       )
     }
     return this.fieldViewCounts.get(productId) || 0
+  }
+
+  async getListingPurchaseIntentCount(qrToken: string) {
+    return this.listingPurchaseIntentCounts.get(qrToken) || 0
+  }
+
+  async recordListingPurchaseIntent(
+    qrToken: string,
+    visitorHash: string,
+    intendedOn: string,
+  ) {
+    if (!this.listings.has(qrToken)) return 0
+    const key = `${qrToken}:${visitorHash}:${intendedOn}`
+    if (!this.listingPurchaseIntentEvents.has(key)) {
+      this.listingPurchaseIntentEvents.add(key)
+      this.listingPurchaseIntentCounts.set(
+        qrToken,
+        (this.listingPurchaseIntentCounts.get(qrToken) || 0) + 1,
+      )
+    }
+    return this.getListingPurchaseIntentCount(qrToken)
+  }
+
+  async getFieldProductPurchaseIntentCount(productId: string) {
+    return this.fieldPurchaseIntentCounts.get(productId) || 0
+  }
+
+  async recordFieldProductPurchaseIntent(
+    productId: string,
+    visitorHash: string,
+    intendedOn: string,
+  ) {
+    const key = `${productId}:${visitorHash}:${intendedOn}`
+    if (!this.fieldPurchaseIntentEvents.has(key)) {
+      this.fieldPurchaseIntentEvents.add(key)
+      this.fieldPurchaseIntentCounts.set(
+        productId,
+        (this.fieldPurchaseIntentCounts.get(productId) || 0) + 1,
+      )
+    }
+    return this.getFieldProductPurchaseIntentCount(productId)
   }
 
   async createSession(token: string, customerPhone: string, expiresAt: Date) {

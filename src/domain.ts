@@ -84,6 +84,18 @@ export interface CommerceStore {
     visitorHash: string,
     viewedOn: string,
   ): Promise<number>
+  getListingPurchaseIntentCount(qrToken: string): Promise<number>
+  recordListingPurchaseIntent(
+    qrToken: string,
+    visitorHash: string,
+    intendedOn: string,
+  ): Promise<number>
+  getFieldProductPurchaseIntentCount(productId: string): Promise<number>
+  recordFieldProductPurchaseIntent(
+    productId: string,
+    visitorHash: string,
+    intendedOn: string,
+  ): Promise<number>
   createSession(
     token: string,
     customerPhone: string,
