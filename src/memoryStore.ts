@@ -26,6 +26,8 @@ export class MemoryStore implements CommerceStore {
   }>()
   private readonly viewEvents = new Set<string>()
   private readonly viewCounts = new Map<string, number>()
+  private readonly fieldViewEvents = new Set<string>()
+  private readonly fieldViewCounts = new Map<string, number>()
 
   constructor(seeds: SeedListing[]) {
     for (const seed of seeds)
@@ -53,6 +55,22 @@ export class MemoryStore implements CommerceStore {
 
   getListingViewCount(qrToken: string) {
     return this.viewCounts.get(qrToken) || 0
+  }
+
+  async recordFieldProductView(
+    productId: string,
+    visitorHash: string,
+    viewedOn: string,
+  ) {
+    const key = `${productId}:${visitorHash}:${viewedOn}`
+    if (!this.fieldViewEvents.has(key)) {
+      this.fieldViewEvents.add(key)
+      this.fieldViewCounts.set(
+        productId,
+        (this.fieldViewCounts.get(productId) || 0) + 1,
+      )
+    }
+    return this.fieldViewCounts.get(productId) || 0
   }
 
   async createSession(token: string, customerPhone: string, expiresAt: Date) {

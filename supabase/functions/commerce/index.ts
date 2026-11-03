@@ -1623,6 +1623,45 @@ Deno.serve(async (request) => {
       })
     }
 
+    const fieldViewMatch = path.match(
+      /^\/api\/v1\/field-products\/([^/]+)\/view$/,
+    )
+    if (request.method === "GET" && fieldViewMatch) {
+      const productId = decodeURIComponent(fieldViewMatch[1]!)
+      const allowed = new Set([
+        "kendama",
+        "dango-keyring",
+        "octopus-keyring",
+        "poetry-postcards",
+      ])
+      if (!allowed.has(productId))
+        return json(request, { message: "상품 링크를 확인해 주세요." }, 404)
+      const visitorId = request.headers.get("x-curit-visitor-id") || ""
+      if (!/^[A-Za-z0-9_-]{16,128}$/.test(visitorId))
+        return json(request, { message: "방문 정보를 확인해 주세요." }, 400)
+      const viewedOn = new Date(Date.now() + 9 * 60 * 60 * 1000)
+        .toISOString()
+        .slice(0, 10)
+      const event = await admin.from("field_product_view_events").upsert(
+        {
+          product_id: productId,
+          visitor_hash: await digest(visitorId),
+          viewed_on: viewedOn,
+        },
+        {
+          onConflict: "product_id,visitor_hash,viewed_on",
+          ignoreDuplicates: true,
+        },
+      )
+      if (event.error) throw event.error
+      const count = await admin
+        .from("field_product_view_events")
+        .select("id", { count: "exact", head: true })
+        .eq("product_id", productId)
+      if (count.error) throw count.error
+      return json(request, { productId, viewCount: count.count || 0 })
+    }
+
     if (request.method === "POST" && path === "/api/auth/identity/start") {
       const body = await request.json()
       const phone = String(body.phone || "")

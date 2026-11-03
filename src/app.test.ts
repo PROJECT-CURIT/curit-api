@@ -86,6 +86,21 @@ describe("CURI:T QR commerce API", () => {
     expect(store.getListingViewCount("demo-mug-white-gray")).toBe(2)
   })
 
+  it("keeps field-sale interest counts separate per product", async () => {
+    const visitor = "33333333-3333-4333-8333-333333333333"
+    const open = (productId: string) =>
+      app.inject({
+        method: "GET",
+        url: `/api/v1/field-products/${productId}/view`,
+        headers: { "x-curit-visitor-id": visitor },
+      })
+
+    expect((await open("poetry-postcards")).json().viewCount).toBe(1)
+    expect((await open("poetry-postcards")).json().viewCount).toBe(1)
+    expect((await open("octopus-keyring")).json().viewCount).toBe(1)
+    expect((await open("poetry-postcards")).json().viewCount).toBe(1)
+  })
+
   it("allows both QR web and mobile web origins", async () => {
     await app.close()
     app = await buildApp({

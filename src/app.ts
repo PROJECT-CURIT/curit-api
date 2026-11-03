@@ -76,6 +76,41 @@ export async function buildApp({
 
   app.get("/health", async () => ({ status: "ok" }))
 
+  const fieldProductIds = new Set([
+    "kendama",
+    "dango-keyring",
+    "octopus-keyring",
+    "poetry-postcards",
+  ])
+
+  app.get<{ Params: { productId: string } }>(
+    "/api/v1/field-products/:productId/view",
+    { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const productId = request.params.productId
+      const visitorId = request.headers["x-curit-visitor-id"]
+      if (!fieldProductIds.has(productId))
+        return reply.code(404).send({ message: "상품 링크를 확인해 주세요." })
+      if (
+        typeof visitorId !== "string" ||
+        !/^[A-Za-z0-9_-]{16,128}$/.test(visitorId)
+      )
+        return reply.code(400).send({ message: "방문 정보를 확인해 주세요." })
+      const viewedOn = new Date(Date.now() + 9 * 60 * 60 * 1000)
+        .toISOString()
+        .slice(0, 10)
+      const viewCount = await store.recordFieldProductView(
+        productId,
+        hashQrToken(visitorId),
+        viewedOn,
+      )
+      return reply.header("Cache-Control", "no-store").send({
+        productId,
+        viewCount,
+      })
+    },
+  )
+
   app.get<{ Params: { token: string } }>(
     "/api/v1/qr/:token",
     {

@@ -79,6 +79,11 @@ export interface CommerceStore {
     visitorHash: string,
     viewedOn: string,
   ): Promise<void>
+  recordFieldProductView(
+    productId: string,
+    visitorHash: string,
+    viewedOn: string,
+  ): Promise<number>
   createSession(
     token: string,
     customerPhone: string,

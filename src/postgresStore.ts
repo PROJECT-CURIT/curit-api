@@ -121,6 +121,24 @@ export class PostgresStore implements CommerceStore {
     `
   }
 
+  async recordFieldProductView(
+    productId: string,
+    visitorHash: string,
+    viewedOn: string,
+  ) {
+    await this.sql`
+      INSERT INTO field_product_view_events (product_id, visitor_hash, viewed_on)
+      VALUES (${productId}, ${visitorHash}, ${viewedOn}::date)
+      ON CONFLICT (product_id, visitor_hash, viewed_on) DO NOTHING
+    `
+    const rows = await this.sql<{ count: number }[]>`
+      SELECT COUNT(*)::int AS count
+      FROM field_product_view_events
+      WHERE product_id = ${productId}
+    `
+    return Number(rows[0]?.count || 0)
+  }
+
   async createSession(token: string, customerPhone: string, expiresAt: Date) {
     await this.sql`
       INSERT INTO customer_sessions (token_hash, customer_phone, expires_at)
