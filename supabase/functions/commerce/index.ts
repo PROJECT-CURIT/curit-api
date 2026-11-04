@@ -406,7 +406,7 @@ async function sendPush(
         to: device.expo_push_token,
         title,
         body,
-        data,
+        data: { ...data, recipientId: device.user_id },
         sound: "default",
         channelId: "curit-updates",
       })),
@@ -481,7 +481,7 @@ async function sendOrderPaidPush(order: Record<string, any>) {
     if (inserted.error) throw inserted.error
     const recipients = (inserted.data || []).map((row) => String(row.user_id))
     if (recipients.length)
-      await sendPush(recipients, title, body, { kind: "order", orderId: order.id, status: "paid" })
+      await sendPush(recipients, "새 주문 소식이 있어요", "큐릿에서 주문을 확인해 주세요.", { kind: "order", orderId: order.id, status: "paid" })
   } catch (error) {
     console.error("Paid order notification failed", error)
   }
@@ -1053,6 +1053,28 @@ Deno.serve(async (request) => {
       return json(request, { requested: items.length, settlementId })
     }
 
+    if (request.method === "POST" && path === "/api/push/device") {
+      const user = await appUserFor(request)
+      if (!user) return json(request, { message: "로그인이 필요합니다." }, 401)
+      const body = await request.json().catch(() => null)
+      if (body?.userId !== user.id) return json(request, { message: "로그인한 계정을 다시 확인해 주세요." }, 403)
+      const token = body?.token
+      const platform = body?.platform
+      if (
+        typeof token !== "string" || token.length > 255 ||
+        !/^(ExponentPushToken|ExpoPushToken)\[[A-Za-z0-9_-]+\]$/.test(token) ||
+        (platform !== "android" && platform !== "ios")
+      ) return json(request, { message: "기기 알림 정보를 확인하지 못했습니다." }, 400)
+      const { error } = await admin.rpc("register_curit_push_device", {
+        p_user_id: user.id,
+        p_expo_push_token: token,
+        p_platform: platform,
+        p_device_name: typeof body.deviceName === "string" ? body.deviceName.slice(0, 100) : "",
+      })
+      if (error) throw error
+      return json(request, { registered: true })
+    }
+
     const pushCollaborationMatch = path.match(
       /^\/api\/push\/collaborations\/([0-9a-f-]{36})$/i,
     )
@@ -1070,7 +1092,7 @@ Deno.serve(async (request) => {
       await sendPush(
         recipients,
         "협업 상태가 변경됐어요",
-        `현재 상태: ${participant.collaboration.status}`,
+        "큐릿에서 협업 소식을 확인해 주세요.",
         { kind: "collaboration", entityId: participant.collaboration.id },
       )
       return json(request, { sent: recipients.length })
@@ -1637,7 +1659,7 @@ Deno.serve(async (request) => {
       await sendPush(
         users,
         "결제 취소가 완료됐어요",
-        `주문 ${order.data.id.slice(-8)}의 재고와 정산 내역이 갱신됐습니다.`,
+        "큐릿에서 주문 상태를 확인해 주세요.",
         { kind: "order", orderId: order.data.id, status: "cancelled" },
       )
       return json(request, {
