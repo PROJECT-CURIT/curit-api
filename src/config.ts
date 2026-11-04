@@ -35,9 +35,12 @@ export function loadConfig(
   }
   const tossClientKey = environment.TOSS_CLIENT_KEY || ""
   const tossSecretKey = environment.TOSS_SECRET_KEY || ""
-  if (paymentMode === "toss" && (!tossClientKey || !tossSecretKey)) {
+  const sandboxKeys =
+    (/^test_ck_.+/.test(tossClientKey) && /^test_sk_.+/.test(tossSecretKey)) ||
+    (/^test_gck_.+/.test(tossClientKey) && /^test_gsk_.+/.test(tossSecretKey))
+  if (paymentMode === "toss" && !sandboxKeys) {
     throw new Error(
-      "TOSS_CLIENT_KEY and TOSS_SECRET_KEY are required when PAYMENT_MODE=toss",
+      "A matching pair of Toss sandbox keys is required when PAYMENT_MODE=toss",
     )
   }
 

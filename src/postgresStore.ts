@@ -23,6 +23,7 @@ type OrderRow = {
   listing_id: string
   status: "pending" | "paid" | "cancelled"
   simulated: boolean
+  test_payment: boolean
   artwork_id: string
   quantity: number
   amount: number
@@ -44,6 +45,7 @@ function toOrder(row: OrderRow): Order {
     id: row.id,
     status: row.status,
     simulated: row.simulated,
+    testPayment: row.test_payment,
     artworkId: row.artwork_id,
     quantity: row.quantity,
     amount: row.amount,
@@ -64,6 +66,7 @@ const orderColumns = [
   "listing_id",
   "status",
   "simulated",
+  "test_payment",
   "artwork_id",
   "quantity",
   "amount",
@@ -252,11 +255,11 @@ export class PostgresStore implements CommerceStore {
       const rows = await transaction<OrderRow[]>`
         INSERT INTO qr_orders (
           id, listing_id, customer_name, customer_phone, customer_session_hash, quantity, amount,
-          status, simulated, payment_method, pickup_mode, fulfillment_status, pickup_date,
+          status, simulated, test_payment, payment_method, pickup_mode, fulfillment_status, pickup_date,
           cafe_name, cafe_phone, snapshot, store_id, request_id, artwork_id, payment_provider
         ) VALUES (
           ${id}, ${listing.id}, ${input.customerName}, ${input.customerPhone}, ${input.customerSessionHash},
-          ${input.quantity}, ${amount}, 'pending', ${input.simulated}, ${input.paymentMethod},
+          ${input.quantity}, ${amount}, 'pending', ${input.simulated}, ${!input.simulated}, ${input.paymentMethod},
           ${snapshot.product.pickupMode},
           ${
             snapshot.product.pickupMode === "exhibition"

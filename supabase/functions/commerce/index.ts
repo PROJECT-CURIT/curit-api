@@ -13,12 +13,16 @@ const PAYMENT_MODE = paymentMode === "toss" || paymentMode === "demo"
   : "disabled"
 const TOSS_CLIENT_KEY = Deno.env.get("TOSS_CLIENT_KEY") || ""
 const TOSS_SECRET_KEY = Deno.env.get("TOSS_SECRET_KEY") || ""
+const TOSS_SANDBOX_READY =
+  /^test_ck_.+/.test(TOSS_CLIENT_KEY) && /^test_sk_.+/.test(TOSS_SECRET_KEY) ||
+  /^test_gck_.+/.test(TOSS_CLIENT_KEY) && /^test_gsk_.+/.test(TOSS_SECRET_KEY)
 const TOSS_WEBHOOK_SECURITY_KEY =
   Deno.env.get("TOSS_WEBHOOK_SECURITY_KEY") || ""
 const TOSS_EXPECTED_MID = Deno.env.get("TOSS_EXPECTED_MID") || ""
 const TOSS_PAYOUT_SECRET_KEY = Deno.env.get("TOSS_PAYOUT_SECRET_KEY") || ""
 const TOSS_PAYOUT_SECURITY_KEY = Deno.env.get("TOSS_PAYOUT_SECURITY_KEY") || ""
-const PAYOUT_MODE = Deno.env.get("PAYOUT_MODE") === "toss" ? "toss" : "disabled"
+// CURI:T must never execute live transfers without an explicit change to this policy.
+const PAYOUT_MODE: string = "disabled"
 const PAYOUT_JOB_SECRET = Deno.env.get("PAYOUT_JOB_SECRET") || ""
 const OPERATIONS_JOB_SECRET =
   Deno.env.get("OPERATIONS_JOB_SECRET") || PAYOUT_JOB_SECRET
@@ -222,6 +226,7 @@ function orderResponse(row: Record<string, unknown>) {
     id: row.id,
     status: row.status,
     simulated: row.simulated === true,
+    testPayment: row.test_payment === true,
     artworkId: row.artwork_id,
     quantity: Number(row.quantity),
     amount: Number(row.amount),
@@ -242,6 +247,8 @@ async function toss(
   body: Record<string, unknown>,
   idempotencyKey: string,
 ) {
+  if (!TOSS_SANDBOX_READY)
+    throw Object.assign(new Error("안전한 결제 환경을 확인하지 못했어요."), { status: 503 })
   const response = await fetch(
     `https://api.tosspayments.com/v1/payments${path}`,
     {
@@ -274,6 +281,8 @@ function tossPaymentMethod(payment: Record<string, unknown>) {
 }
 
 async function tossPayment(paymentKey: string) {
+  if (!TOSS_SANDBOX_READY)
+    throw Object.assign(new Error("안전한 결제 환경을 확인하지 못했어요."), { status: 503 })
   const response = await fetch(
     `https://api.tosspayments.com/v1/payments/${encodeURIComponent(paymentKey)}`,
     {
@@ -629,6 +638,7 @@ async function insertPending(
     amount: Number(listing.price) * quantity,
     status: "pending",
     simulated: PAYMENT_MODE === "demo",
+    test_payment: PAYMENT_MODE === "toss" && TOSS_SANDBOX_READY,
     payment_method: paymentMethod,
     pickup_mode: snapshot.product.pickupMode,
     fulfillment_status: snapshot.product.pickupMode === "exhibition"
@@ -662,10 +672,11 @@ Deno.serve(async (request) => {
         status: "ok",
         region: FUNCTION_REGION,
         paymentMode: PAYMENT_MODE,
+        paymentEnvironment: PAYMENT_MODE === "toss" && TOSS_SANDBOX_READY ? "sandbox" : "unavailable",
         webhookReady: Boolean(TOSS_WEBHOOK_SECURITY_KEY),
         expectedMidReady: Boolean(TOSS_EXPECTED_MID),
         payoutMode: PAYOUT_MODE,
-        payoutReady: Boolean(TOSS_PAYOUT_SECRET_KEY && TOSS_PAYOUT_SECURITY_KEY),
+        payoutReady: false,
       })
 
     if (request.method === "POST" && path === "/api/webhooks/toss") {
@@ -915,6 +926,8 @@ Deno.serve(async (request) => {
     if (request.method === "POST" && path === "/api/internal/payouts/sellers") {
       if (!authorizedJobRequest(request))
         return json(request, { message: "판매자 등록 권한이 없습니다." }, 401)
+      if (PAYOUT_MODE !== "toss")
+        return json(request, { message: "판매대금 지급이 비활성화되어 있습니다." }, 503)
       const body = await request.json()
       if (body.confirm !== "REGISTER_SELLER")
         return json(request, { message: "판매자 등록 확인값이 필요합니다." }, 400)
@@ -969,6 +982,8 @@ Deno.serve(async (request) => {
     if (request.method === "POST" && path === "/api/internal/payouts/run") {
       if (!authorizedJobRequest(request))
         return json(request, { message: "지급 실행 권한이 없습니다." }, 401)
+      if (PAYOUT_MODE !== "toss")
+        return json(request, { message: "판매대금 지급이 비활성화되어 있습니다." }, 503)
       const body = await request.json()
       if (body.confirm !== "EXECUTE_PAYOUT")
         return json(request, { message: "지급 실행 확인값이 필요합니다." }, 400)
@@ -1312,7 +1327,7 @@ Deno.serve(async (request) => {
       if (!user) return json(request, { message: "로그인이 필요합니다." }, 401)
       const listing = await admin
         .from("qr_listings")
-        .select("id, collaboration_id, snapshot")
+        .select("id, collaboration_id, price, snapshot")
         .eq("id", managedMatch[1]!)
         .maybeSingle()
       if (listing.error) throw listing.error
@@ -1337,21 +1352,29 @@ Deno.serve(async (request) => {
       const body = await request.json()
       const updates: Record<string, unknown> = {}
       if (body.stock !== undefined) {
-        const stock = Number(body.stock)
-        if (!Number.isSafeInteger(stock) || stock < 0 || stock > 100000)
+        const stock = body.stock
+        if (typeof stock !== "number" || !Number.isSafeInteger(stock) || stock < 0 || stock > 100000)
           return json(request, { message: "재고 수량을 확인해 주세요." }, 400)
+        if (
+          body.expectedStock !== undefined &&
+          (typeof body.expectedStock !== "number" ||
+            !Number.isSafeInteger(body.expectedStock) ||
+            body.expectedStock < 0)
+        )
+          return json(request, { message: "기존 재고 수량을 확인해 주세요." }, 400)
         updates.stock = stock
       }
-      if (body.price !== undefined) {
-        const price = Number(body.price)
-        if (!Number.isSafeInteger(price) || price < 100 || price > 100000000)
-          return json(request, { message: "판매 가격을 확인해 주세요." }, 400)
-        updates.price = price
-      }
-      if (body.pickupMode !== undefined) {
-        if (!["immediate", "exhibition"].includes(body.pickupMode))
-          return json(request, { message: "수령 방식을 확인해 주세요." }, 400)
-      }
+      const snapshot = listing.data.snapshot as Record<string, any>
+      const pickupMode = snapshot?.product?.pickupMode || "immediate"
+      if (
+        (body.price !== undefined && body.price !== listing.data.price) ||
+        (body.pickupMode !== undefined && body.pickupMode !== pickupMode)
+      )
+        return json(
+          request,
+          { message: "합의한 판매가와 수령 방식은 이 화면에서 변경할 수 없어요." },
+          409,
+        )
       if (body.saleStatus !== undefined) {
         if (!["active", "preparing"].includes(body.saleStatus))
           return json(request, { message: "판매 상태를 확인해 주세요." }, 400)
@@ -1367,31 +1390,26 @@ Deno.serve(async (request) => {
         updates.sale_status = body.saleStatus
       }
       if (!Object.keys(updates).length)
-        if (body.pickupMode === undefined)
-          return json(request, { message: "변경할 값을 입력해 주세요." }, 400)
-      if (body.price !== undefined || body.pickupMode !== undefined) {
-        const snapshot = listing.data.snapshot as Record<string, any>
-        updates.snapshot = {
-          ...snapshot,
-          product: {
-            ...snapshot.product,
-            ...(body.price !== undefined ? { price: Number(body.price) } : {}),
-            ...(body.pickupMode !== undefined
-              ? { pickupMode: body.pickupMode }
-              : {}),
-          },
-        }
-      }
+        return json(request, { message: "변경할 값을 입력해 주세요." }, 400)
       updates.updated_at = new Date().toISOString()
-      const updated = await admin
+      let query = admin
         .from("qr_listings")
         .update(updates)
         .eq("id", listing.data.id)
+      if (body.stock !== undefined && body.expectedStock !== undefined)
+        query = query.eq("stock", body.expectedStock)
+      const updated = await query
         .select(
           "id, qr_token_value, token_hint, project_item_id, collaboration_id, sale_status, price, stock, view_count, snapshot",
         )
-        .single()
+        .maybeSingle()
       if (updated.error) throw updated.error
+      if (!updated.data)
+        return json(
+          request,
+          { message: "재고가 바뀌었어요. 목록에서 상품을 다시 열고 최신 수량을 확인해 주세요." },
+          409,
+        )
       return json(
         request,
         managedListing(updated.data as Record<string, unknown>),
@@ -1881,7 +1899,7 @@ Deno.serve(async (request) => {
     if (request.method === "POST" && path === "/api/checkout") {
       const body = await request.json()
       if (PAYMENT_MODE === "disabled" ||
-        (PAYMENT_MODE === "toss" && (!TOSS_CLIENT_KEY || !TOSS_SECRET_KEY)))
+        (PAYMENT_MODE === "toss" && !TOSS_SANDBOX_READY))
         return json(request, { message: "결제 설정을 확인하고 있어요." }, 503)
       const { row, qrToken } = await insertPending(body, session)
       if (PAYMENT_MODE === "toss") {

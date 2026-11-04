@@ -49,6 +49,7 @@ export type Order = {
   id: string
   status: "pending" | "paid" | "cancelled"
   simulated: boolean
+  testPayment: boolean
   artworkId: string
   quantity: number
   amount: number

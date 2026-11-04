@@ -184,6 +184,7 @@ export class MemoryStore implements CommerceStore {
       id: "QR-" + randomUUID(),
       status: "pending",
       simulated: input.simulated,
+      testPayment: !input.simulated,
       artworkId: listing.product.artworkId,
       quantity: input.quantity,
       amount: listing.product.price * input.quantity,

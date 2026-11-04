@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { loadConfig } from "./config.js"
 import { confirmTossPayment } from "./toss.js"
 
 const payment = {
@@ -10,6 +11,25 @@ const payment = {
 }
 
 afterEach(() => vi.unstubAllGlobals())
+
+describe("Toss credential policy", () => {
+  it("rejects live or mixed credential pairs", () => {
+    expect(() =>
+      loadConfig({
+        PAYMENT_MODE: "toss",
+        TOSS_CLIENT_KEY: "test_gck_fixture",
+        TOSS_SECRET_KEY: "live_gsk_fixture",
+      }),
+    ).toThrow("Toss sandbox keys")
+    expect(() =>
+      loadConfig({
+        PAYMENT_MODE: "toss",
+        TOSS_CLIENT_KEY: "test_ck_fixture",
+        TOSS_SECRET_KEY: "test_gsk_fixture",
+      }),
+    ).toThrow("Toss sandbox keys")
+  })
+})
 
 describe("Toss confirmation recovery", () => {
   it("recovers a completed approval from a duplicate callback", async () => {
