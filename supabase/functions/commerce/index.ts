@@ -20,6 +20,14 @@ const PAYOUT_JOB_SECRET = Deno.env.get("PAYOUT_JOB_SECRET") || ""
 const OPERATIONS_JOB_SECRET =
   Deno.env.get("OPERATIONS_JOB_SECRET") || PAYOUT_JOB_SECRET
 const FUNCTION_REGION = Deno.env.get("SB_REGION") || "unknown"
+const FIELD_SALE_PRODUCT_IDS = new Set([
+  "kendama",
+  "dango-keyring",
+  "octopus-keyring",
+  "poetry-postcards",
+  "tea-coaster",
+  "jjukkumi-keyring",
+])
 const origins = (
   Deno.env.get("WEB_ORIGIN") ||
   `${DEFAULT_WEB_URL},http://localhost:5173,http://localhost:8082`
@@ -1681,13 +1689,7 @@ Deno.serve(async (request) => {
     )
     if (request.method === "GET" && fieldViewMatch) {
       const productId = decodeURIComponent(fieldViewMatch[1]!)
-      const allowed = new Set([
-        "kendama",
-        "dango-keyring",
-        "octopus-keyring",
-        "poetry-postcards",
-      ])
-      if (!allowed.has(productId))
+      if (!FIELD_SALE_PRODUCT_IDS.has(productId))
         return json(request, { message: "상품 링크를 확인해 주세요." }, 404)
       const visitorId = request.headers.get("x-curit-visitor-id") || ""
       if (!/^[A-Za-z0-9_-]{16,128}$/.test(visitorId))
@@ -1723,13 +1725,7 @@ Deno.serve(async (request) => {
       fieldPurchaseIntentMatch
     ) {
       const productId = decodeURIComponent(fieldPurchaseIntentMatch[1]!)
-      const allowed = new Set([
-        "kendama",
-        "dango-keyring",
-        "octopus-keyring",
-        "poetry-postcards",
-      ])
-      if (!allowed.has(productId))
+      if (!FIELD_SALE_PRODUCT_IDS.has(productId))
         return json(request, { message: "상품 링크를 확인해 주세요." }, 404)
       if (request.method === "POST") {
         const visitorId = request.headers.get("x-curit-visitor-id") || ""
