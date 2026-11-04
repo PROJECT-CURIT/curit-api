@@ -243,6 +243,33 @@ function orderResponse(row: Record<string, unknown>) {
   }
 }
 
+const managedOrderFields =
+  "id, listing_id, customer_name, customer_phone, quantity, amount, status, payment_method, pickup_mode, pickup_date, snapshot, fulfillment_status, delivered_at, created_at"
+
+function managedOrderResponse(row: Record<string, unknown>) {
+  const product = (row.snapshot as { product?: { name?: string; image?: string } } | null)?.product
+  return {
+    id: row.id,
+    listingId: row.listing_id,
+    productName: product?.name || "등록 상품",
+    imageUrl: product?.image || "",
+    customerName: row.customer_name,
+    customerPhoneLast4: String(row.customer_phone || "").slice(-4),
+    quantity: Number(row.quantity),
+    amount: Number(row.amount),
+    paymentMethod: row.payment_method,
+    paymentStatus: row.status,
+    pickupMode: row.pickup_mode,
+    pickupDate: row.pickup_date,
+    fulfillmentStatus: row.fulfillment_status,
+    deliveredAt: row.delivered_at,
+    createdAt: row.created_at,
+  }
+}
+
+// Exclude abandoned checkout attempts, which also use the cancelled status.
+const completedOrderStatuses = "status.eq.paid,and(status.eq.cancelled,cancelled_amount.gt.0)"
+
 async function toss(
   path: string,
   body: Record<string, unknown>,
@@ -1478,44 +1505,49 @@ Deno.serve(async (request) => {
       if (!listingIds.length) return json(request, { orders: [] })
       const orders = await admin
         .from("qr_orders")
-        .select(
-          "id, listing_id, customer_name, customer_phone, quantity, amount, status, payment_method, pickup_mode, pickup_date, snapshot, fulfillment_status, delivered_at, created_at",
-        )
+        .select(managedOrderFields)
         .in("listing_id", listingIds)
         .eq("status", "paid")
         .order("created_at", { ascending: false })
       if (orders.error) throw orders.error
       return json(request, {
-        orders: (orders.data || []).map((row) => ({
-          id: row.id,
-          listingId: row.listing_id,
-          productName:
-            (row.snapshot as Record<string, any>)?.product?.name || "등록 상품",
-          imageUrl:
-            (row.snapshot as Record<string, any>)?.product?.image || "",
-          customerName: row.customer_name,
-          customerPhoneLast4: String(row.customer_phone || "").slice(-4),
-          quantity: Number(row.quantity),
-          amount: Number(row.amount),
-          paymentMethod: row.payment_method,
-          pickupMode: row.pickup_mode,
-          pickupDate: row.pickup_date,
-          fulfillmentStatus: row.fulfillment_status,
-          deliveredAt: row.delivered_at,
-          createdAt: row.created_at,
-        })),
+        orders: (orders.data || []).map(managedOrderResponse),
       })
     }
 
     const managedOrderMatch = path.match(
       /^\/api\/management\/orders\/(QR-[0-9a-f-]+)$/i,
     )
+    if (managedOrderMatch && request.method === "GET") {
+      const user = await appUserFor(request)
+      if (!user) return json(request, { message: "로그인이 필요합니다." }, 401)
+      const unavailable = () => json(request, { message: "해당 주문을 찾지 못했어요." }, 404)
+      const order = await admin
+        .from("qr_orders")
+        .select(managedOrderFields)
+        .eq("id", managedOrderMatch[1]!)
+        .or(completedOrderStatuses)
+        .maybeSingle()
+      if (order.error) throw order.error
+      if (!order.data) return unavailable()
+      const listing = await admin
+        .from("qr_listings")
+        .select("collaboration_id")
+        .eq("id", order.data.listing_id)
+        .maybeSingle()
+      if (listing.error) throw listing.error
+      if (!listing.data?.collaboration_id) return unavailable()
+      const participant = await participantCollaboration(user.id, listing.data.collaboration_id)
+      if (participant?.store.owner_id !== user.id) return unavailable()
+      return json(request, managedOrderResponse(order.data))
+    }
+
     if (managedOrderMatch && request.method === "PATCH") {
       const user = await appUserFor(request)
       if (!user) return json(request, { message: "로그인이 필요합니다." }, 401)
       const order = await admin
         .from("qr_orders")
-        .select("id, listing_id, status")
+        .select("id, listing_id, status, fulfillment_status, delivered_at")
         .eq("id", managedOrderMatch[1]!)
         .maybeSingle()
       if (order.error) throw order.error
@@ -1539,6 +1571,12 @@ Deno.serve(async (request) => {
       const next = String(body.fulfillmentStatus || "")
       if (!["awaiting_pickup", "reserved", "delivered"].includes(next))
         return json(request, { message: "수령 상태를 확인해 주세요." }, 400)
+      const current = order.data.fulfillment_status
+      if (next === current)
+        return json(request, { id: order.data.id, fulfillmentStatus: current, deliveredAt: order.data.delivered_at })
+      if (!((current === "reserved" && next === "awaiting_pickup") ||
+            (current === "awaiting_pickup" && next === "delivered")))
+        return json(request, { message: "현재 상태에서 해당 수령 단계로 변경할 수 없어요." }, 409)
       const updated = await admin
         .from("qr_orders")
         .update({
@@ -1547,9 +1585,13 @@ Deno.serve(async (request) => {
           updated_at: new Date().toISOString(),
         })
         .eq("id", order.data.id)
+        .eq("status", "paid")
+        .eq("fulfillment_status", current)
         .select("id, fulfillment_status, delivered_at")
-        .single()
+        .maybeSingle()
       if (updated.error) throw updated.error
+      if (!updated.data)
+        return json(request, { message: "주문 상태가 바뀌었어요. 다시 불러와 주세요." }, 409)
       return json(request, {
         id: updated.data.id,
         fulfillmentStatus: updated.data.fulfillment_status,
@@ -1919,25 +1961,27 @@ Deno.serve(async (request) => {
         401,
       )
 
+    // Older web builds only understand paid receipts.
+    const includeCancelled = new URL(request.url).searchParams.get("includeCancelled") === "1"
     if (request.method === "GET" && path === "/api/orders") {
-      const { data, error } = await admin
+      const owned = admin
         .from("qr_orders")
         .select("*")
         .eq("customer_session_hash", session.hash)
-        .eq("status", "paid")
+      const { data, error } = await (includeCancelled ? owned.or(completedOrderStatuses) : owned.eq("status", "paid"))
         .order("created_at", { ascending: false })
       if (error) throw error
       return json(request, { orders: (data || []).map(orderResponse) })
     }
     const orderMatch = path.match(/^\/api\/orders\/([^/]+)$/)
     if (request.method === "GET" && orderMatch) {
-      const { data } = await admin
+      const owned = admin
         .from("qr_orders")
         .select("*")
         .eq("id", decodeURIComponent(orderMatch[1]!))
         .eq("customer_session_hash", session.hash)
-        .eq("status", "paid")
-        .maybeSingle()
+      const { data, error } = await (includeCancelled ? owned.or(completedOrderStatuses) : owned.eq("status", "paid")).maybeSingle()
+      if (error) throw error
       return data
         ? json(request, orderResponse(data))
         : json(request, { message: "주문 내역을 찾지 못했어요." }, 404)
