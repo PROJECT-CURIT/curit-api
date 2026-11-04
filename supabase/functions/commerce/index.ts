@@ -7,10 +7,7 @@ const DEFAULT_WEB_URL = "https://project-curit.github.io/curit-qr-web"
 const PUBLIC_WEB_URL = (
   Deno.env.get("PUBLIC_WEB_URL") || DEFAULT_WEB_URL
 ).replace(/\/$/, "")
-const paymentMode = Deno.env.get("PAYMENT_MODE")
-const PAYMENT_MODE = paymentMode === "toss" || paymentMode === "demo"
-  ? paymentMode
-  : "disabled"
+const PAYMENT_MODE = Deno.env.get("PAYMENT_MODE") === "toss" ? "toss" : "disabled"
 const TOSS_CLIENT_KEY = Deno.env.get("TOSS_CLIENT_KEY") || ""
 const TOSS_SECRET_KEY = Deno.env.get("TOSS_SECRET_KEY") || ""
 const TOSS_SANDBOX_READY =
@@ -637,8 +634,8 @@ async function insertPending(
     quantity,
     amount: Number(listing.price) * quantity,
     status: "pending",
-    simulated: PAYMENT_MODE === "demo",
-    test_payment: PAYMENT_MODE === "toss" && TOSS_SANDBOX_READY,
+    simulated: false,
+    test_payment: true,
     payment_method: paymentMethod,
     pickup_mode: snapshot.product.pickupMode,
     fulfillment_status: snapshot.product.pickupMode === "exhibition"
@@ -1898,44 +1895,28 @@ Deno.serve(async (request) => {
 
     if (request.method === "POST" && path === "/api/checkout") {
       const body = await request.json()
-      if (PAYMENT_MODE === "disabled" ||
-        (PAYMENT_MODE === "toss" && !TOSS_SANDBOX_READY))
+      if (PAYMENT_MODE !== "toss" || !TOSS_SANDBOX_READY)
         return json(request, { message: "결제 설정을 확인하고 있어요." }, 503)
       const { row, qrToken } = await insertPending(body, session)
-      if (PAYMENT_MODE === "toss") {
-        const successUrl = qrWebUrl(qrToken)
-        successUrl.searchParams.set("payment", "success")
-        const failUrl = qrWebUrl(qrToken)
-        failUrl.searchParams.set("payment", "fail")
-        const pendingSnapshot = row.snapshot as { product?: { name?: string } }
-        return json(request, {
-          simulated: false,
-          payment: {
-            provider: "toss",
-            clientKey: TOSS_CLIENT_KEY,
-            customerKey: "ANONYMOUS",
-            orderId: row.id,
-            amount: Number(row.amount),
-            orderName: pendingSnapshot.product?.name || "CURI:T 작품·굿즈",
-            customerName: row.customer_name,
-            successUrl: successUrl.href,
-            failUrl: failUrl.href,
-          },
-        })
-      }
-      const confirmed = await admin.rpc("confirm_curit_order", {
-        p_order_id: row.id,
-        p_customer_phone: session.phone,
-        p_payment_key: "demo",
+      const successUrl = qrWebUrl(qrToken)
+      successUrl.searchParams.set("payment", "success")
+      const failUrl = qrWebUrl(qrToken)
+      failUrl.searchParams.set("payment", "fail")
+      const pendingSnapshot = row.snapshot as { product?: { name?: string } }
+      return json(request, {
+        simulated: false,
+        payment: {
+          provider: "toss",
+          clientKey: TOSS_CLIENT_KEY,
+          customerKey: "ANONYMOUS",
+          orderId: row.id,
+          amount: Number(row.amount),
+          orderName: pendingSnapshot.product?.name || "CURI:T 작품·굿즈",
+          customerName: row.customer_name,
+          successUrl: successUrl.href,
+          failUrl: failUrl.href,
+        },
       })
-      if (confirmed.error) throw confirmed.error
-      const paid = Array.isArray(confirmed.data)
-        ? confirmed.data[0]
-        : confirmed.data
-      if (paid) await sendOrderPaidPush(paid as Record<string, any>)
-      const destination = qrWebUrl(qrToken)
-      destination.searchParams.set("order", String(row.id))
-      return json(request, { checkoutUrl: destination.href, simulated: true })
     }
 
     const abandonedCheckoutMatch = path.match(
@@ -1958,8 +1939,8 @@ Deno.serve(async (request) => {
     }
 
     if (request.method === "POST" && path === "/api/payments/confirm") {
-      if (PAYMENT_MODE !== "toss")
-        return json(request, { message: "현재 테스트 결제 모드입니다." }, 409)
+      if (PAYMENT_MODE !== "toss" || !TOSS_SANDBOX_READY)
+        return json(request, { message: "결제 설정을 확인하고 있어요." }, 503)
       const body = await request.json()
       const orderId = String(body.orderId || "")
       const paymentKey = typeof body.paymentKey === "string" ? body.paymentKey : ""
