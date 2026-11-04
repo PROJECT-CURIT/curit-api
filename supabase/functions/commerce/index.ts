@@ -119,7 +119,7 @@ async function appUserFor(request: Request) {
   return error ? null : data.user
 }
 
-function managedListing(row: Record<string, unknown>) {
+function managedListing(row: Record<string, unknown>, canStartSale: boolean) {
   const snapshot = row.snapshot as Record<string, any>
   const token = typeof row.qr_token_value === "string" ? row.qr_token_value : ""
   return {
@@ -133,6 +133,10 @@ function managedListing(row: Record<string, unknown>) {
     imageUrl: snapshot?.product?.image || "",
     price: Number(row.price),
     stock: Number(row.stock),
+    supplyLimit: snapshot?.product?.supplyLimit,
+    description: snapshot?.product?.description || "",
+    material: snapshot?.product?.composition || "",
+    canStartSale,
     viewCount: Number(row.view_count || 0),
     status:
       row.sale_status === "active"
@@ -620,11 +624,7 @@ async function insertPending(
       ? "카카오페이"
       : body.paymentMethod === "tosspay"
         ? "토스페이"
-        : `${String(body.cardIssuer || "선택")}카드 · ${
-            body.installment === "0"
-              ? "일시불"
-              : `${String(body.installment || "0")}개월`
-          }`
+        : "토스페이먼츠"
   const row = {
     id,
     listing_id: listing.id,
@@ -1142,8 +1142,11 @@ Deno.serve(async (request) => {
             issuable: true,
           })),
       )
+      const activeCollaborationIds = new Set(
+        (collaborations.data || []).filter(row => row.status === "active").map(row => row.id),
+      )
       return json(request, {
-        listings: (data || []).map(managedListing),
+        listings: (data || []).map(row => managedListing(row, activeCollaborationIds.has(row.collaboration_id))),
         candidates,
       })
     }
@@ -1220,8 +1223,19 @@ Deno.serve(async (request) => {
       if (existing.data)
         return json(
           request,
-          managedListing(existing.data as Record<string, unknown>),
+          managedListing(existing.data, participant.collaboration.status === "active"),
         )
+
+      const agreement = await admin.from("collaboration_items")
+        .select("quantity, creator_confirmed")
+        .eq("collaboration_id", collaborationId)
+        .eq("project_item_id", projectItemId)
+        .maybeSingle()
+      if (agreement.error) throw agreement.error
+      if (agreement.data && !agreement.data.creator_confirmed)
+        return json(request, { message: "크리에이터가 작품 구성과 수량을 확인한 뒤 QR을 발급해 주세요." }, 409)
+      const supplyLimit = agreement.data?.quantity
+      const initialStock = supplyLimit === undefined ? item.data.stock : Math.min(item.data.stock, supplyLimit)
 
       const project = await admin
         .from("projects")
@@ -1280,7 +1294,8 @@ Deno.serve(async (request) => {
           name: item.data.name,
           artist: creator.data.display_name,
           price: Number(item.data.price),
-          stock: Number(item.data.stock),
+          stock: initialStock,
+          ...(supplyLimit === undefined ? {} : { supplyLimit }),
           image: imageUrl,
           description: item.data.description || "",
           composition: item.data.material || "",
@@ -1301,7 +1316,7 @@ Deno.serve(async (request) => {
           collaboration_id: collaborationId,
           sale_status: snapshot.saleStatus,
           price: Number(item.data.price),
-          stock: Number(item.data.stock),
+          stock: initialStock,
           snapshot,
         })
         .select(
@@ -1311,7 +1326,7 @@ Deno.serve(async (request) => {
       if (inserted.error) throw inserted.error
       return json(
         request,
-        managedListing(inserted.data as Record<string, unknown>),
+        managedListing(inserted.data, participant.collaboration.status === "active"),
         201,
       )
     }
@@ -1324,7 +1339,7 @@ Deno.serve(async (request) => {
       if (!user) return json(request, { message: "로그인이 필요합니다." }, 401)
       const listing = await admin
         .from("qr_listings")
-        .select("id, collaboration_id, price, snapshot")
+        .select("id, collaboration_id, price, stock, snapshot")
         .eq("id", managedMatch[1]!)
         .maybeSingle()
       if (listing.error) throw listing.error
@@ -1348,6 +1363,7 @@ Deno.serve(async (request) => {
         )
       const body = await request.json()
       const updates: Record<string, unknown> = {}
+      const snapshot = listing.data.snapshot as Record<string, any>
       if (body.stock !== undefined) {
         const stock = body.stock
         if (typeof stock !== "number" || !Number.isSafeInteger(stock) || stock < 0 || stock > 100000)
@@ -1359,9 +1375,16 @@ Deno.serve(async (request) => {
             body.expectedStock < 0)
         )
           return json(request, { message: "기존 재고 수량을 확인해 주세요." }, 400)
+        const supplyLimit = snapshot?.product?.supplyLimit
+        if (Number.isSafeInteger(supplyLimit)) {
+          const sales = await admin.rpc("curit_qr_paid_quantity", { p_listing_id: listing.data.id })
+          if (sales.error) throw sales.error
+          const maxStock = Math.max(0, supplyLimit - Number(sales.data))
+          if (stock > maxStock)
+            return json(request, { message: `이미 판매된 수량을 제외하면 최대 ${maxStock.toLocaleString("ko-KR")}개까지 설정할 수 있어요.` }, 409)
+        }
         updates.stock = stock
       }
-      const snapshot = listing.data.snapshot as Record<string, any>
       const pickupMode = snapshot?.product?.pickupMode || "immediate"
       if (
         (body.price !== undefined && body.price !== listing.data.price) ||
@@ -1393,8 +1416,8 @@ Deno.serve(async (request) => {
         .from("qr_listings")
         .update(updates)
         .eq("id", listing.data.id)
-      if (body.stock !== undefined && body.expectedStock !== undefined)
-        query = query.eq("stock", body.expectedStock)
+      if (body.stock !== undefined)
+        query = query.eq("stock", body.expectedStock ?? listing.data.stock)
       const updated = await query
         .select(
           "id, qr_token_value, token_hint, project_item_id, collaboration_id, sale_status, price, stock, view_count, snapshot",
@@ -1409,7 +1432,7 @@ Deno.serve(async (request) => {
         )
       return json(
         request,
-        managedListing(updated.data as Record<string, unknown>),
+        managedListing(updated.data, participant.collaboration.status === "active"),
       )
     }
 
