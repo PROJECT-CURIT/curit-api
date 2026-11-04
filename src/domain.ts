@@ -68,6 +68,7 @@ export type CreateOrderInput = {
   quantity: number
   customerName: string
   customerPhone: string
+  customerSessionHash: string
   paymentMethod: string
   simulated: boolean
 }
@@ -106,16 +107,16 @@ export interface CommerceStore {
   prepareOrder(input: CreateOrderInput): Promise<Order>
   getOrderForPayment(
     orderId: string,
-    customerPhone: string,
+    customerSessionHash: string,
   ): Promise<Order | null>
   confirmOrder(
     orderId: string,
     paymentKey: string,
-    customerPhone: string,
+    customerSessionHash: string,
   ): Promise<Order>
-  cancelOrder(orderId: string, customerPhone: string): Promise<void>
-  listOrders(customerPhone: string): Promise<Order[]>
-  getOrder(orderId: string, customerPhone: string): Promise<Order | null>
+  cancelOrder(orderId: string, customerSessionHash: string): Promise<void>
+  listOrders(customerSessionHash: string): Promise<Order[]>
+  getOrder(orderId: string, customerSessionHash: string): Promise<Order | null>
   close(): Promise<void>
 }
 

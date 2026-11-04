@@ -9,8 +9,16 @@ import {
 import type { SeedListing } from "./seeds.js"
 
 type StoredOrder = Order & {
-  customerPhone: string
+  customerSessionHash: string
   createdAt: number
+}
+
+function publicOrder({
+  customerSessionHash: _hash,
+  createdAt: _createdAt,
+  ...order
+}: StoredOrder): Order {
+  return clone(order)
 }
 
 function clone<T>(value: T): T {
@@ -136,7 +144,7 @@ export class MemoryStore implements CommerceStore {
 
   async createOrder(input: CreateOrderInput) {
     const order = await this.prepareOrder(input)
-    return this.confirmOrder(order.id, "demo", input.customerPhone)
+    return this.confirmOrder(order.id, "demo", input.customerSessionHash)
   }
 
   async prepareOrder(input: CreateOrderInput) {
@@ -188,31 +196,33 @@ export class MemoryStore implements CommerceStore {
       storeId: listing.storeId,
       requestId: listing.requestId,
       customerLabel: input.customerName,
-      customerPhone: input.customerPhone,
+      customerSessionHash: input.customerSessionHash,
       createdAt: Date.now(),
     }
     this.orders.set(order.id, order)
-    return clone(order)
+    return publicOrder(order)
   }
 
-  async getOrderForPayment(orderId: string, customerPhone: string) {
+  async getOrderForPayment(orderId: string, customerSessionHash: string) {
     const order = this.orders.get(orderId)
-    return order?.customerPhone === customerPhone ? clone(order) : null
+    return order?.customerSessionHash === customerSessionHash
+      ? publicOrder(order)
+      : null
   }
 
   async confirmOrder(
     orderId: string,
     _paymentKey: string,
-    customerPhone: string,
+    customerSessionHash: string,
   ) {
     const order = this.orders.get(orderId)
-    if (!order || order.customerPhone !== customerPhone)
+    if (!order || order.customerSessionHash !== customerSessionHash)
       throw new DomainError(
         "주문 내역을 찾지 못했어요.",
         404,
         "ORDER_NOT_FOUND",
       )
-    if (order.status === "paid") return clone(order)
+    if (order.status === "paid") return publicOrder(order)
     if (order.status !== "pending")
       throw new DomainError(
         "결제할 수 없는 주문입니다.",
@@ -228,28 +238,34 @@ export class MemoryStore implements CommerceStore {
       )
     listing.product.stock -= order.quantity
     order.status = "paid"
-    return clone(order)
+    return publicOrder(order)
   }
 
-  async cancelOrder(orderId: string, customerPhone: string) {
+  async cancelOrder(orderId: string, customerSessionHash: string) {
     const order = this.orders.get(orderId)
-    if (order?.customerPhone === customerPhone && order.status === "pending")
+    if (
+      order?.customerSessionHash === customerSessionHash &&
+      order.status === "pending"
+    )
       order.status = "cancelled"
   }
 
-  async listOrders(customerPhone: string) {
+  async listOrders(customerSessionHash: string) {
     return [...this.orders.values()]
       .filter(
         (order) =>
-          order.customerPhone === customerPhone && order.status === "paid",
+          order.customerSessionHash === customerSessionHash &&
+          order.status === "paid",
       )
       .sort((a, b) => b.createdAt - a.createdAt)
-      .map((order) => clone(order))
+      .map((order) => publicOrder(order))
   }
 
-  async getOrder(orderId: string, customerPhone: string) {
+  async getOrder(orderId: string, customerSessionHash: string) {
     const order = this.orders.get(orderId)
-    return order?.customerPhone === customerPhone ? clone(order) : null
+    return order?.customerSessionHash === customerSessionHash
+      ? publicOrder(order)
+      : null
   }
 
   async close() {}

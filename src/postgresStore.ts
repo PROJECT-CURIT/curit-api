@@ -251,11 +251,11 @@ export class PostgresStore implements CommerceStore {
       const amount = listing.price * input.quantity
       const rows = await transaction<OrderRow[]>`
         INSERT INTO qr_orders (
-          id, listing_id, customer_name, customer_phone, quantity, amount,
+          id, listing_id, customer_name, customer_phone, customer_session_hash, quantity, amount,
           status, simulated, payment_method, pickup_mode, pickup_date,
           cafe_name, cafe_phone, snapshot, store_id, request_id, artwork_id, payment_provider
         ) VALUES (
-          ${id}, ${listing.id}, ${input.customerName}, ${input.customerPhone},
+          ${id}, ${listing.id}, ${input.customerName}, ${input.customerPhone}, ${input.customerSessionHash},
           ${input.quantity}, ${amount}, 'pending', ${input.simulated}, ${input.paymentMethod},
           ${snapshot.product.pickupMode}, ${snapshot.product.exhibitionEnd}, ${snapshot.store.name},
           ${snapshot.store.phone}, ${this.sql.json(snapshot)}, ${snapshot.storeId},
@@ -270,13 +270,13 @@ export class PostgresStore implements CommerceStore {
 
   async createOrder(input: CreateOrderInput) {
     const pending = await this.prepareOrder(input)
-    return this.confirmOrder(pending.id, "demo", input.customerPhone)
+    return this.confirmOrder(pending.id, "demo", input.customerSessionHash)
   }
 
-  async getOrderForPayment(orderId: string, customerPhone: string) {
+  async getOrderForPayment(orderId: string, customerSessionHash: string) {
     const rows = await this.sql<OrderRow[]>`
       SELECT ${this.sql.unsafe(orderColumns)} FROM qr_orders
-      WHERE id = ${orderId} AND customer_phone = ${customerPhone} LIMIT 1
+      WHERE id = ${orderId} AND customer_session_hash = ${customerSessionHash} LIMIT 1
     `
     return rows[0] ? toOrder(rows[0]) : null
   }
@@ -284,12 +284,12 @@ export class PostgresStore implements CommerceStore {
   async confirmOrder(
     orderId: string,
     paymentKey: string,
-    customerPhone: string,
+    customerSessionHash: string,
   ) {
     return this.sql.begin(async (transaction) => {
       const orders = await transaction<OrderRow[]>`
         SELECT ${this.sql.unsafe(orderColumns)} FROM qr_orders
-        WHERE id = ${orderId} AND customer_phone = ${customerPhone} FOR UPDATE
+        WHERE id = ${orderId} AND customer_session_hash = ${customerSessionHash} FOR UPDATE
       `
       const order = orders[0]
       if (!order)
@@ -345,25 +345,25 @@ export class PostgresStore implements CommerceStore {
     })
   }
 
-  async cancelOrder(orderId: string, customerPhone: string) {
+  async cancelOrder(orderId: string, customerSessionHash: string) {
     await this.sql`
       UPDATE qr_orders SET status = 'cancelled', cancelled_at = NOW(), updated_at = NOW()
-      WHERE id = ${orderId} AND customer_phone = ${customerPhone} AND status = 'pending'
+      WHERE id = ${orderId} AND customer_session_hash = ${customerSessionHash} AND status = 'pending'
     `
   }
 
-  async listOrders(customerPhone: string) {
+  async listOrders(customerSessionHash: string) {
     const rows = await this.sql<OrderRow[]>`
       SELECT ${this.sql.unsafe(orderColumns)} FROM qr_orders
-      WHERE customer_phone = ${customerPhone} AND status = 'paid' ORDER BY created_at DESC
+      WHERE customer_session_hash = ${customerSessionHash} AND status = 'paid' ORDER BY created_at DESC
     `
     return rows.map(toOrder)
   }
 
-  async getOrder(orderId: string, customerPhone: string) {
+  async getOrder(orderId: string, customerSessionHash: string) {
     const rows = await this.sql<OrderRow[]>`
       SELECT ${this.sql.unsafe(orderColumns)} FROM qr_orders
-      WHERE id = ${orderId} AND customer_phone = ${customerPhone} AND status = 'paid' LIMIT 1
+      WHERE id = ${orderId} AND customer_session_hash = ${customerSessionHash} AND status = 'paid' LIMIT 1
     `
     return rows[0] ? toOrder(rows[0]) : null
   }

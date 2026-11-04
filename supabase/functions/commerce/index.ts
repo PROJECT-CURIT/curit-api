@@ -7,7 +7,10 @@ const DEFAULT_WEB_URL = "https://project-curit.github.io/curit-qr-web"
 const PUBLIC_WEB_URL = (
   Deno.env.get("PUBLIC_WEB_URL") || DEFAULT_WEB_URL
 ).replace(/\/$/, "")
-const PAYMENT_MODE = Deno.env.get("PAYMENT_MODE") === "toss" ? "toss" : "demo"
+const paymentMode = Deno.env.get("PAYMENT_MODE")
+const PAYMENT_MODE = paymentMode === "toss" || paymentMode === "demo"
+  ? paymentMode
+  : "disabled"
 const TOSS_CLIENT_KEY = Deno.env.get("TOSS_CLIENT_KEY") || ""
 const TOSS_SECRET_KEY = Deno.env.get("TOSS_SECRET_KEY") || ""
 const TOSS_WEBHOOK_SECURITY_KEY =
@@ -25,8 +28,9 @@ const origins = (
   `${DEFAULT_WEB_URL},http://localhost:5173,http://localhost:8082`
 )
   .split(",")
-  .map((value) => value.trim())
-  .filter(Boolean)
+  .flatMap((value) => {
+    try { return [new URL(value.trim()).origin] } catch { return [] }
+  })
 
 const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
@@ -53,6 +57,7 @@ function json(request: Request, body: unknown, status = 200) {
       ...cors(request),
       "Content-Type": "application/json; charset=utf-8",
       "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff",
     },
   })
 }
@@ -80,14 +85,14 @@ function qrWebUrl(token: string) {
   return destination
 }
 
-async function phoneFor(request: Request) {
+async function guestSession(request: Request) {
   const sessionToken =
     request.headers.get("x-curit-session") ||
     request.headers
       .get("authorization")
       ?.match(/^Bearer ([A-Za-z0-9_-]{32,128})$/)?.[1] ||
     ""
-  if (!sessionToken) return ""
+  if (!/^[A-Za-z0-9_-]{32,128}$/.test(sessionToken)) return null
   const tokenHash = await digest(sessionToken)
   const { data } = await admin
     .from("customer_sessions")
@@ -95,7 +100,9 @@ async function phoneFor(request: Request) {
     .eq("token_hash", tokenHash)
     .gt("expires_at", new Date().toISOString())
     .maybeSingle()
-  return typeof data?.customer_phone === "string" ? data.customer_phone : ""
+  return typeof data?.customer_phone === "string"
+    ? { phone: data.customer_phone, hash: tokenHash }
+    : null
 }
 
 function bearerFor(request: Request) {
@@ -245,6 +252,7 @@ async function toss(
         "Idempotency-Key": idempotencyKey,
       },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(15000),
     },
   )
   const result = await response.json().catch(() => ({}))
@@ -530,7 +538,10 @@ function authorizedJobRequest(request: Request) {
   return mismatch === 0
 }
 
-async function insertPending(body: Record<string, unknown>, phone: string) {
+async function insertPending(
+  body: Record<string, unknown>,
+  session: { phone: string; hash: string },
+) {
   const qrToken = String(body.qrToken || "")
   const quantity = Number(body.quantity)
   const name = String(body.name || "")
@@ -589,7 +600,8 @@ async function insertPending(body: Record<string, unknown>, phone: string) {
     id,
     listing_id: listing.id,
     customer_name: name,
-    customer_phone: phone,
+    customer_phone: session.phone,
+    customer_session_hash: session.hash,
     quantity,
     amount: Number(listing.price) * quantity,
     status: "pending",
@@ -689,12 +701,14 @@ Deno.serve(async (request) => {
           const orderId = String(verified.orderId || "")
           const order = await admin
             .from("qr_orders")
-            .select("id, customer_phone, payment_key, amount, status")
+            .select("id, customer_phone, payment_key, payment_provider, amount, status")
             .eq("id", orderId)
             .maybeSingle()
           if (order.error) throw order.error
           if (!order.data) throw new Error("웹훅 주문을 찾지 못했습니다.")
           if (
+            order.data.payment_provider !== "toss" ||
+            verified.paymentKey !== paymentKey ||
             Number(verified.totalAmount) !== Number(order.data.amount) ||
             (order.data.payment_key && order.data.payment_key !== paymentKey) ||
             (TOSS_EXPECTED_MID && String(verified.mId || "") !== TOSS_EXPECTED_MID)
@@ -1685,6 +1699,8 @@ Deno.serve(async (request) => {
         "kendama",
         "dango-keyring",
         "octopus-keyring",
+        "jjukkumi-keyring",
+        "tea-coaster",
         "poetry-postcards",
       ])
       if (!allowed.has(productId))
@@ -1727,6 +1743,8 @@ Deno.serve(async (request) => {
         "kendama",
         "dango-keyring",
         "octopus-keyring",
+        "jjukkumi-keyring",
+        "tea-coaster",
         "poetry-postcards",
       ])
       if (!allowed.has(productId))
@@ -1793,15 +1811,15 @@ Deno.serve(async (request) => {
     }
 
     if (request.method === "GET" && path === "/api/auth/session") {
-      const phone = await phoneFor(request)
+      const session = await guestSession(request)
       return json(
         request,
-        phone ? { verified: true, phone } : { verified: false },
+        session ? { verified: true, phone: session.phone } : { verified: false },
       )
     }
 
-    const phone = await phoneFor(request)
-    if (!phone)
+    const session = await guestSession(request)
+    if (!session)
       return json(
         request,
         { message: "휴대폰 번호를 다시 확인해 주세요." },
@@ -1812,7 +1830,7 @@ Deno.serve(async (request) => {
       const { data, error } = await admin
         .from("qr_orders")
         .select("*")
-        .eq("customer_phone", phone)
+        .eq("customer_session_hash", session.hash)
         .eq("status", "paid")
         .order("created_at", { ascending: false })
       if (error) throw error
@@ -1824,7 +1842,7 @@ Deno.serve(async (request) => {
         .from("qr_orders")
         .select("*")
         .eq("id", decodeURIComponent(orderMatch[1]!))
-        .eq("customer_phone", phone)
+        .eq("customer_session_hash", session.hash)
         .eq("status", "paid")
         .maybeSingle()
       return data
@@ -1834,14 +1852,11 @@ Deno.serve(async (request) => {
 
     if (request.method === "POST" && path === "/api/checkout") {
       const body = await request.json()
-      const { row, qrToken } = await insertPending(body, phone)
+      if (PAYMENT_MODE === "disabled" ||
+        (PAYMENT_MODE === "toss" && (!TOSS_CLIENT_KEY || !TOSS_SECRET_KEY)))
+        return json(request, { message: "결제 설정을 확인하고 있어요." }, 503)
+      const { row, qrToken } = await insertPending(body, session)
       if (PAYMENT_MODE === "toss") {
-        if (!TOSS_CLIENT_KEY || !TOSS_SECRET_KEY)
-          return json(
-            request,
-            { message: "결제 상점 키가 설정되지 않았습니다." },
-            503,
-          )
         const successUrl = qrWebUrl(qrToken)
         successUrl.searchParams.set("payment", "success")
         const failUrl = qrWebUrl(qrToken)
@@ -1864,7 +1879,7 @@ Deno.serve(async (request) => {
       }
       const confirmed = await admin.rpc("confirm_curit_order", {
         p_order_id: row.id,
-        p_customer_phone: phone,
+        p_customer_phone: session.phone,
         p_payment_key: "demo",
       })
       if (confirmed.error) throw confirmed.error
@@ -1890,7 +1905,7 @@ Deno.serve(async (request) => {
           updated_at: new Date().toISOString(),
         })
         .eq("id", orderId)
-        .eq("customer_phone", phone)
+        .eq("customer_session_hash", session.hash)
         .eq("status", "pending")
       if (error) throw error
       return json(request, { abandoned: true })
@@ -1901,19 +1916,25 @@ Deno.serve(async (request) => {
         return json(request, { message: "현재 테스트 결제 모드입니다." }, 409)
       const body = await request.json()
       const orderId = String(body.orderId || "")
-      const paymentKey = String(body.paymentKey || "")
-      const amount = Number(body.amount)
+      const paymentKey = typeof body.paymentKey === "string" ? body.paymentKey : ""
+      const amount = body.amount
+      if (!/^QR-[0-9a-f-]{36}$/.test(orderId) ||
+        !paymentKey || paymentKey.length > 200 ||
+        typeof amount !== "number" || !Number.isSafeInteger(amount) || amount < 1)
+        return json(request, { message: "결제 정보를 확인해 주세요." }, 400)
       const { data: pending } = await admin
         .from("qr_orders")
         .select("*")
         .eq("id", orderId)
-        .eq("customer_phone", phone)
+        .eq("customer_session_hash", session.hash)
         .maybeSingle()
       if (!pending)
         return json(request, { message: "주문 내역을 찾지 못했어요." }, 404)
       if (pending.status === "paid")
         return json(request, orderResponse(pending))
-      if (pending.status !== "pending" || Number(pending.amount) !== amount)
+      if (pending.status !== "pending" ||
+        pending.payment_provider !== "toss" ||
+        Number(pending.amount) !== amount)
         return json(
           request,
           { message: "결제 금액 또는 주문 상태가 일치하지 않습니다." },
@@ -1924,25 +1945,35 @@ Deno.serve(async (request) => {
         { paymentKey, orderId, amount },
         `confirm-${orderId}`,
       )
+      if (tossPayment.status !== "DONE" ||
+        tossPayment.orderId !== orderId ||
+        tossPayment.paymentKey !== paymentKey ||
+        tossPayment.totalAmount !== amount ||
+        (TOSS_EXPECTED_MID && tossPayment.mId !== TOSS_EXPECTED_MID))
+        return json(request, { message: "결제 완료 상태를 확인하지 못했어요." }, 409)
       const confirmed = await admin.rpc("confirm_curit_order", {
         p_order_id: orderId,
-        p_customer_phone: phone,
+        p_customer_phone: session.phone,
         p_payment_key: paymentKey,
       })
       if (confirmed.error) {
-        await toss(
-          `/${encodeURIComponent(paymentKey)}/cancel`,
-          { cancelReason: "재고 또는 주문 상태 불일치로 자동 취소" },
-          `cancel-${orderId}`,
-        ).catch(() => undefined)
-        await admin
-          .from("qr_orders")
-          .update({
-            status: "cancelled",
-            cancelled_at: new Date().toISOString(),
-          })
-          .eq("id", orderId)
-          .eq("status", "pending")
+        if (["INSUFFICIENT_STOCK", "ORDER_NOT_PENDING"].includes(confirmed.error.message)) {
+          await toss(
+            `/${encodeURIComponent(paymentKey)}/cancel`,
+            { cancelReason: "재고 또는 주문 상태 불일치로 자동 취소" },
+            `cancel-${orderId}`,
+          )
+          const cancellation = await admin
+            .from("qr_orders")
+            .update({
+              status: "cancelled",
+              cancelled_at: new Date().toISOString(),
+            })
+            .eq("id", orderId)
+            .eq("customer_session_hash", session.hash)
+            .eq("status", "pending")
+          if (cancellation.error) throw cancellation.error
+        }
         throw confirmed.error
       }
       let paid = Array.isArray(confirmed.data)

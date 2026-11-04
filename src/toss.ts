@@ -45,18 +45,33 @@ async function tossRequest(
   return result
 }
 
-export function confirmTossPayment(
+export async function confirmTossPayment(
   secretKey: string,
   paymentKey: string,
   orderId: string,
   amount: number,
+  expectedMid?: string,
 ) {
-  return tossRequest(
+  const payment = await tossRequest(
     "/confirm",
     secretKey,
     { paymentKey, orderId, amount },
     `confirm-${orderId}`,
   )
+  if (
+    payment.status !== "DONE" ||
+    payment.orderId !== orderId ||
+    payment.paymentKey !== paymentKey ||
+    payment.totalAmount !== amount ||
+    (expectedMid && payment.mId !== expectedMid)
+  ) {
+    throw new TossError(
+      "결제 완료 상태를 확인하지 못했어요.",
+      409,
+      "PAYMENT_NOT_CONFIRMED",
+    )
+  }
+  return payment
 }
 
 export function cancelTossPayment(

@@ -1,8 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { buildApp } from "./app.js"
 import type { AppConfig } from "./config.js"
 import { MemoryStore } from "./memoryStore.js"
 import { seedListings } from "./seeds.js"
+import { hashQrToken } from "./token.js"
 
 const config: AppConfig = {
   nodeEnv: "test",
@@ -220,6 +221,35 @@ describe("CURI:T QR commerce API", () => {
     })
     expect(order.json().amount).toBe(70000)
     expect(order.json().simulated).toBe(true)
+    expect(order.json()).not.toHaveProperty("customerSessionHash")
+
+    const samePhoneIdentity = await app.inject({
+      method: "POST",
+      url: "/api/auth/identity/start",
+      payload: { phone: "01012345678", consent: true },
+    })
+    const headers = {
+      authorization: `Bearer ${samePhoneIdentity.json().accessToken}`,
+    }
+    const foreignOrder = await app.inject({
+      method: "GET",
+      url: `/api/orders/${encodeURIComponent(orderId)}`,
+      headers,
+    })
+    const foreignHistory = await app.inject({
+      method: "GET",
+      url: "/api/orders",
+      headers,
+    })
+    const ownerHistory = await app.inject({
+      method: "GET",
+      url: "/api/orders",
+      cookies: { [cookie.name]: cookie.value },
+    })
+    expect(foreignOrder.statusCode).toBe(404)
+    expect(foreignHistory.json()).toEqual({ orders: [] })
+    expect(ownerHistory.json().orders).toHaveLength(1)
+    expect(ownerHistory.headers["cache-control"]).toBe("no-store")
   })
 
   it("rejects an order that exceeds live stock", async () => {
@@ -306,8 +336,18 @@ describe("CURI:T QR commerce API", () => {
     const otherIdentity = await app.inject({
       method: "POST",
       url: "/api/auth/identity/start",
-      payload: { phone: "01099998888", consent: true },
+      payload: { phone: "01012345678", consent: true },
     })
+    const foreignConfirm = await app.inject({
+      method: "POST",
+      url: "/api/payments/confirm",
+      headers: {
+        authorization: `Bearer ${otherIdentity.json().accessToken}`,
+      },
+      payload: { orderId, paymentKey: "test_payment_key", amount: 70000 },
+    })
+    expect(foreignConfirm.statusCode).toBe(404)
+
     const foreignAbandon = await app.inject({
       method: "POST",
       url: `/api/checkout/${encodeURIComponent(orderId)}/abandon`,
@@ -318,8 +358,40 @@ describe("CURI:T QR commerce API", () => {
     })
     expect(foreignAbandon.statusCode).toBe(200)
     expect(
-      await store.getOrderForPayment(orderId, "01012345678"),
+      await store.getOrderForPayment(
+        orderId,
+        hashQrToken(identity.json().accessToken),
+      ),
     ).toMatchObject({ status: "pending" })
+
+    const paymentKey = "test_payment_key"
+    const provider = vi.fn(async () =>
+      Response.json({
+        orderId,
+        paymentKey,
+        totalAmount: 70000,
+        status: "WAITING_FOR_DEPOSIT",
+      }),
+    )
+    vi.stubGlobal("fetch", provider)
+    try {
+      const incompletePayment = await app.inject({
+        method: "POST",
+        url: "/api/payments/confirm",
+        headers: { authorization: `Bearer ${identity.json().accessToken}` },
+        payload: { orderId, paymentKey, amount: 70000 },
+      })
+      expect(incompletePayment.statusCode).toBe(409)
+      expect(provider).toHaveBeenCalledTimes(1)
+      expect(
+        await store.getOrderForPayment(
+          orderId,
+          hashQrToken(identity.json().accessToken),
+        ),
+      ).toMatchObject({ status: "pending" })
+    } finally {
+      vi.unstubAllGlobals()
+    }
 
     const abandoned = await app.inject({
       method: "POST",
@@ -330,7 +402,10 @@ describe("CURI:T QR commerce API", () => {
     expect(abandoned.statusCode).toBe(200)
     expect(abandoned.json()).toEqual({ abandoned: true })
     expect(
-      await store.getOrderForPayment(orderId, "01012345678"),
+      await store.getOrderForPayment(
+        orderId,
+        hashQrToken(identity.json().accessToken),
+      ),
     ).toMatchObject({ status: "cancelled" })
   })
 })

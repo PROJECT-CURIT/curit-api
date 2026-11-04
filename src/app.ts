@@ -22,16 +22,16 @@ type BuildAppOptions = {
   logger?: boolean
 }
 
-async function sessionPhone(request: FastifyRequest, store: CommerceStore) {
-  const authorization = request.headers.authorization
-  const bearer = authorization?.match(/^Bearer ([A-Za-z0-9_-]{32,128})$/)?.[1]
-  const value = bearer || request.cookies[SESSION_COOKIE]
-  if (!value) return ""
-  if (bearer) return (await store.getSessionPhone(bearer)) || ""
-  const unsigned = request.unsignCookie(value)
-  if (!unsigned.valid || !/^[A-Za-z0-9_-]{32,128}$/.test(unsigned.value))
-    return ""
-  return (await store.getSessionPhone(unsigned.value)) || ""
+async function guestSession(request: FastifyRequest, store: CommerceStore) {
+  const bearer = request.headers.authorization?.match(
+    /^Bearer ([A-Za-z0-9_-]{32,128})$/,
+  )?.[1]
+  const cookie = request.cookies[SESSION_COOKIE]
+  const unsigned = cookie ? request.unsignCookie(cookie) : null
+  const token = bearer || (unsigned?.valid ? unsigned.value : "")
+  if (!/^[A-Za-z0-9_-]{32,128}$/.test(token)) return null
+  const phone = await store.getSessionPhone(token)
+  return phone ? { phone, hash: hashQrToken(token) } : null
 }
 
 function paymentLabel(body: Record<string, unknown>) {
@@ -60,7 +60,7 @@ export async function buildApp({
   store,
   logger = false,
 }: BuildAppOptions) {
-  const app = Fastify({ logger, trustProxy: true })
+  const app = Fastify({ logger, trustProxy: config.trustedProxy || false })
   const allowedWebOrigins = config.webOrigin
     .split(",")
     .map((origin) => origin.trim())
@@ -78,12 +78,19 @@ export async function buildApp({
   })
   await app.register(rateLimit, { max: 120, timeWindow: "1 minute" })
 
+  app.addHook("onSend", async (request, reply) => {
+    if (request.url.startsWith("/api/"))
+      reply.header("Cache-Control", "no-store")
+  })
+
   app.get("/health", async () => ({ status: "ok" }))
 
   const fieldProductIds = new Set([
     "kendama",
     "dango-keyring",
     "octopus-keyring",
+    "jjukkumi-keyring",
+    "tea-coaster",
     "poetry-postcards",
   ])
 
@@ -252,8 +259,10 @@ export async function buildApp({
   )
 
   app.get("/api/auth/session", async (request) => {
-    const phone = await sessionPhone(request, store)
-    return phone ? { verified: true, phone } : { verified: false }
+    const session = await guestSession(request, store)
+    return session
+      ? { verified: true, phone: session.phone }
+      : { verified: false }
   })
 
   app.post<{
@@ -306,23 +315,23 @@ export async function buildApp({
   )
 
   app.get("/api/orders", async (request, reply) => {
-    const phone = await sessionPhone(request, store)
-    if (!phone)
+    const session = await guestSession(request, store)
+    if (!session)
       return reply
         .code(401)
         .send({ message: "휴대폰 번호를 다시 확인해 주세요." })
-    return { orders: await store.listOrders(phone) }
+    return { orders: await store.listOrders(session.hash) }
   })
 
   app.get<{ Params: { id: string } }>(
     "/api/orders/:id",
     async (request, reply) => {
-      const phone = await sessionPhone(request, store)
-      if (!phone)
+      const session = await guestSession(request, store)
+      if (!session)
         return reply
           .code(401)
           .send({ message: "휴대폰 번호를 다시 확인해 주세요." })
-      const order = await store.getOrder(request.params.id, phone)
+      const order = await store.getOrder(request.params.id, session.hash)
       if (!order)
         return reply.code(404).send({ message: "주문 내역을 찾지 못했어요." })
       return order
@@ -348,8 +357,8 @@ export async function buildApp({
       config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
     },
     async (request, reply) => {
-      const phone = await sessionPhone(request, store)
-      if (!phone)
+      const session = await guestSession(request, store)
+      if (!session)
         return reply
           .code(401)
           .send({ message: "휴대폰 번호를 다시 확인해 주세요." })
@@ -357,7 +366,8 @@ export async function buildApp({
         qrToken: assertQrToken(String(request.body.qrToken)),
         quantity: Number(request.body.quantity),
         customerName: String(request.body.name).trim(),
-        customerPhone: phone,
+        customerPhone: session.phone,
+        customerSessionHash: session.hash,
         paymentMethod: paymentLabel(request.body),
         simulated: config.paymentMode === "demo",
       }
@@ -393,12 +403,12 @@ export async function buildApp({
     "/api/checkout/:id/abandon",
     { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } },
     async (request, reply) => {
-      const phone = await sessionPhone(request, store)
-      if (!phone)
+      const session = await guestSession(request, store)
+      if (!session)
         return reply
           .code(401)
           .send({ message: "휴대폰 번호를 다시 확인해 주세요." })
-      await store.cancelOrder(request.params.id, phone)
+      await store.cancelOrder(request.params.id, session.hash)
       return { abandoned: true }
     },
   )
@@ -418,7 +428,7 @@ export async function buildApp({
           required: ["paymentKey", "orderId", "amount"],
           additionalProperties: false,
           properties: {
-            paymentKey: { type: "string", minLength: 10, maxLength: 300 },
+            paymentKey: { type: "string", minLength: 1, maxLength: 200 },
             orderId: { type: "string", minLength: 10, maxLength: 80 },
             amount: { type: "integer", minimum: 1 },
           },
@@ -427,8 +437,8 @@ export async function buildApp({
       config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
     },
     async (request, reply) => {
-      const phone = await sessionPhone(request, store)
-      if (!phone)
+      const session = await guestSession(request, store)
+      if (!session)
         return reply
           .code(401)
           .send({ message: "휴대폰 번호를 다시 확인해 주세요." })
@@ -436,7 +446,7 @@ export async function buildApp({
         return reply.code(409).send({ message: "현재 테스트 결제 모드입니다." })
       const pending = await store.getOrderForPayment(
         request.body.orderId,
-        phone,
+        session.hash,
       )
       if (!pending)
         return reply.code(404).send({ message: "주문 내역을 찾지 못했어요." })
@@ -454,21 +464,27 @@ export async function buildApp({
         request.body.paymentKey,
         pending.id,
         pending.amount,
+        config.tossExpectedMid,
       )
       try {
         return await store.confirmOrder(
           pending.id,
           request.body.paymentKey,
-          phone,
+          session.hash,
         )
       } catch (error) {
-        await cancelTossPayment(
-          config.tossSecretKey,
-          request.body.paymentKey,
-          "재고 또는 주문 상태 불일치로 자동 취소",
-          pending.id,
-        ).catch(() => undefined)
-        await store.cancelOrder(pending.id, phone)
+        if (
+          error instanceof DomainError &&
+          ["INSUFFICIENT_STOCK", "ORDER_NOT_PENDING"].includes(error.code)
+        ) {
+          await cancelTossPayment(
+            config.tossSecretKey,
+            request.body.paymentKey,
+            "재고 또는 주문 상태 불일치로 자동 취소",
+            pending.id,
+          )
+          await store.cancelOrder(pending.id, session.hash)
+        }
         throw error
       }
     },

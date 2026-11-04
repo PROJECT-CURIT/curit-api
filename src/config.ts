@@ -1,5 +1,6 @@
 export type AppConfig = {
   nodeEnv: "development" | "test" | "production"
+  trustedProxy?: string
   host: string
   port: number
   webOrigin: string
@@ -9,6 +10,7 @@ export type AppConfig = {
   databaseUrl: string
   tossClientKey: string
   tossSecretKey: string
+  tossExpectedMid?: string
 }
 
 export function loadConfig(
@@ -41,6 +43,7 @@ export function loadConfig(
 
   return {
     nodeEnv,
+    trustedProxy: environment.TRUSTED_PROXY_CIDR?.trim() || "",
     host: environment.HOST || "0.0.0.0",
     port: Number(environment.PORT || 4100),
     webOrigin: environment.WEB_ORIGIN || "http://localhost:5173",
@@ -52,5 +55,6 @@ export function loadConfig(
     databaseUrl: environment.DATABASE_URL || "",
     tossClientKey,
     tossSecretKey,
+    tossExpectedMid: environment.TOSS_EXPECTED_MID?.trim() || "",
   }
 }
