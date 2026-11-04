@@ -604,15 +604,16 @@ async function insertPending(
 ) {
   const qrToken = String(body.qrToken || "")
   const quantity = Number(body.quantity)
-  const name = String(body.name || "")
-    .trim()
-    .slice(0, 40)
+  const name = String(body.name || "").trim()
+  const attemptId = body.attemptId
   if (
     !/^[A-Za-z0-9_-]{12,128}$/.test(qrToken) ||
     !Number.isSafeInteger(quantity) ||
     quantity < 1 ||
     quantity > 20 ||
-    !name
+    !name || name.length > 40 || /[\u0000-\u001f\u007f]/.test(name) ||
+    (attemptId !== undefined && (typeof attemptId !== "string" ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(attemptId)))
   )
     throw Object.assign(new Error("입력한 주문 정보를 다시 확인해 주세요."), {
       status: 400,
@@ -645,7 +646,12 @@ async function insertPending(
       stock: Number(listing.stock),
     },
   }
-  const id = `QR-${crypto.randomUUID()}`
+  // The same attempt maps to one primary key only within its owning guest session.
+  let id = `QR-${crypto.randomUUID()}`
+  if (attemptId) {
+    const key = await digest(`checkout:${session.hash}:${attemptId}`)
+    id = `QR-${key.slice(0, 8)}-${key.slice(8, 12)}-4${key.slice(13, 16)}-a${key.slice(17, 20)}-${key.slice(20, 32)}`
+  }
   const paymentMethod =
     body.paymentMethod === "kakaopay"
       ? "카카오페이"
@@ -679,11 +685,25 @@ async function insertPending(
   }
   const inserted = await admin
     .from("qr_orders")
-    .insert(row)
+    .upsert(row, { onConflict: "id", ignoreDuplicates: true })
     .select("*")
-    .single()
+    .maybeSingle()
   if (inserted.error) throw inserted.error
-  return { row: inserted.data as Record<string, unknown>, qrToken }
+  if (inserted.data) return { row: inserted.data as Record<string, unknown>, qrToken }
+
+  const existing = await admin.from("qr_orders")
+    .select("*")
+    .eq("id", id)
+    .eq("customer_session_hash", session.hash)
+    .maybeSingle()
+  if (existing.error) throw existing.error
+  if (!existing.data || existing.data.listing_id !== row.listing_id ||
+      existing.data.customer_name !== name || existing.data.quantity !== quantity ||
+      existing.data.amount !== row.amount || existing.data.payment_method !== paymentMethod)
+    throw Object.assign(new Error("주문 정보가 달라졌어요. 작품 정보를 다시 확인해 주세요."), { status: 409 })
+  if (existing.data.status !== "pending")
+    throw Object.assign(new Error("이미 처리된 주문이에요. 주문 내역을 확인해 주세요."), { status: 409 })
+  return { row: existing.data as Record<string, unknown>, qrToken }
 }
 
 Deno.serve(async (request) => {
