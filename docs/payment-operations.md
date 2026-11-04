@@ -32,7 +32,7 @@ Edge Function secret에 같은 MID에서 발급된 `TOSS_WEBHOOK_SECURITY_KEY`�
 
 - Android 배포 빌드는 EAS 프로젝트에 FCM v1 서비스 계정 키가 있어야 한다.
 - iOS 실기기 배포는 Apple Developer 계정과 APNs 자격증명이 있어야 한다.
-- 로그인한 기기의 Expo Push Token은 `push_devices`에 저장되고 로그아웃 시 비활성화된다.
+- 로그인 기기의 Expo Push Token은 계정 인증 후 `push_devices`에 등록한다. 같은 설치의 활성 수신 계정은 하나이며 계정을 전환하면 이전 등록이 비활성화된다. 앱은 현재 계정과 수신 계정이 일치하는 알림만 화면 이동에 사용한다.
 - `DeviceNotRegistered` 응답을 받은 토큰은 서버에서 자동 비활성화한다.
 - 스케줄러는 `POST /api/internal/push/receipts`를 호출해 Expo 전송 영수증을 회수한다. 이 요청에는 `x-curit-job-secret`이 필요하다.
 
