@@ -1185,7 +1185,7 @@ Deno.serve(async (request) => {
       if (!["approved", "active"].includes(participant.collaboration.status))
         return json(
           request,
-          { message: "양측 승인이 끝난 협업만 QR을 발급할 수 있습니다." },
+          { message: "크리에이터 승인 후 QR을 발급할 수 있어요." },
           409,
         )
       const item = await admin
@@ -1654,7 +1654,7 @@ Deno.serve(async (request) => {
         return json(request, { message: "구매 링크를 확인해 주세요." }, 404)
       const { data, error } = await admin
         .from("qr_listings")
-        .select("id, stock, price, sale_status, view_count, snapshot")
+        .select("id, collaboration_id, stock, price, sale_status, view_count, snapshot")
         .eq("qr_token_hash", await digest(token))
         .maybeSingle()
       if (error) throw error
@@ -1690,11 +1690,16 @@ Deno.serve(async (request) => {
         .single()
       if (count.error)
         console.warn("QR view count read failed", count.error.message)
+      const parent = data.collaboration_id && data.sale_status === "preparing"
+        ? await admin.from("collaborations").select("status").eq("id", data.collaboration_id).maybeSingle()
+        : null
+      if (parent?.error) throw parent.error
       return json(request, {
         ...data.snapshot,
         qrToken: token,
         viewCount: Number(count.data?.view_count ?? data.view_count ?? 0),
         saleStatus: data.sale_status,
+        saleEnded: ["completed", "cancelled"].includes(parent?.data?.status ?? ""),
         product: {
           ...data.snapshot.product,
           price: Number(data.price),
