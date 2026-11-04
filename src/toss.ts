@@ -52,12 +52,31 @@ export async function confirmTossPayment(
   amount: number,
   expectedMid?: string,
 ) {
-  const payment = await tossRequest(
-    "/confirm",
-    secretKey,
-    { paymentKey, orderId, amount },
-    `confirm-${orderId}`,
-  )
+  let payment: Record<string, unknown>
+  try {
+    payment = await tossRequest(
+      "/confirm",
+      secretKey,
+      { paymentKey, orderId, amount },
+      `confirm-${orderId}`,
+    )
+  } catch (error) {
+    const uncertain =
+      error instanceof TossError
+        ? error.code === "ALREADY_PROCESSED_PAYMENT" || error.statusCode === 502
+        : error instanceof TypeError ||
+          (error instanceof Error && error.name === "TimeoutError")
+    if (!uncertain) throw error
+    const status = await fetch(
+      `${TOSS_API}/${encodeURIComponent(paymentKey)}`,
+      {
+        headers: { Authorization: authorization(secretKey) },
+        signal: AbortSignal.timeout(5000),
+      },
+    )
+    if (!status.ok) throw error
+    payment = ((await status.json()) as Record<string, unknown>)
+  }
   if (
     payment.status !== "DONE" ||
     payment.orderId !== orderId ||

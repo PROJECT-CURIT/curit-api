@@ -290,6 +290,21 @@ async function tossPayment(paymentKey: string) {
   return result as Record<string, any>
 }
 
+async function approvedTossPayment(paymentKey: string, orderId: string, amount: number) {
+  try {
+    return await toss("/confirm", { paymentKey, orderId, amount }, `confirm-${orderId}`)
+  } catch (error) {
+    const failure = error as { code?: string; status?: number; name?: string }
+    if (
+      failure.code !== "ALREADY_PROCESSED_PAYMENT" &&
+      failure.status !== 502 &&
+      failure.name !== "TimeoutError" &&
+      !(error instanceof TypeError)
+    ) throw error
+    return await tossPayment(paymentKey)
+  }
+}
+
 function bytesFromHex(value: string) {
   if (!/^[0-9a-f]{64}$/i.test(value))
     throw Object.assign(new Error("토스 보안 키 형식이 올바르지 않습니다."), {
@@ -375,6 +390,7 @@ async function sendPush(
   const response = await fetch("https://exp.host/--/api/v2/push/send", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    signal: AbortSignal.timeout(5000),
     body: JSON.stringify(
       devices.data.map((device) => ({
         to: device.expo_push_token,
@@ -429,29 +445,36 @@ async function collaborationUsers(collaborationId: string) {
 }
 
 async function sendOrderPaidPush(order: Record<string, any>) {
-  const listing = await admin
-    .from("qr_listings")
-    .select("collaboration_id")
-    .eq("id", order.listing_id)
-    .maybeSingle()
-  if (listing.error || !listing.data?.collaboration_id) return
-  const users = (await collaborationUsers(listing.data.collaboration_id)).filter(Boolean)
-  if (users.length)
-    await admin.from("notifications").insert(
+  try {
+    const listing = await admin
+      .from("qr_listings")
+      .select("collaboration_id")
+      .eq("id", order.listing_id)
+      .maybeSingle()
+    if (listing.error) throw listing.error
+    if (!listing.data?.collaboration_id) return
+    const users = [...new Set((await collaborationUsers(listing.data.collaboration_id)).filter(Boolean))]
+    if (!users.length) return
+    const title = "새 QR 주문이 결제됐어요"
+    const body = `${order.snapshot?.product?.name || "상품"} ${Number(order.quantity)}개 주문을 확인해 주세요.`
+    const inserted = await admin.from("notifications").upsert(
       users.map((userId) => ({
         user_id: userId,
-        title: "새 QR 주문이 결제됐어요",
-        body: `${(order.snapshot as Record<string, any>)?.product?.name || "상품"} ${Number(order.quantity)}개 주문을 확인해 주세요.`,
+        title,
+        body,
         kind: "order",
         entity_id: listing.data!.collaboration_id,
+        dedupe_key: `order-paid:${order.id}`,
       })),
-    )
-  await sendPush(
-    users,
-    "새 QR 주문이 결제됐어요",
-    `${(order.snapshot as Record<string, any>)?.product?.name || "상품"} ${Number(order.quantity)}개 주문을 확인해 주세요.`,
-    { kind: "order", orderId: order.id, status: "paid" },
-  )
+      { onConflict: "user_id,dedupe_key", ignoreDuplicates: true },
+    ).select("user_id")
+    if (inserted.error) throw inserted.error
+    const recipients = (inserted.data || []).map((row) => String(row.user_id))
+    if (recipients.length)
+      await sendPush(recipients, title, body, { kind: "order", orderId: order.id, status: "paid" })
+  } catch (error) {
+    console.error("Paid order notification failed", error)
+  }
 }
 
 async function encryptedTossPayoutRequest(
@@ -608,6 +631,9 @@ async function insertPending(
     simulated: PAYMENT_MODE === "demo",
     payment_method: paymentMethod,
     pickup_mode: snapshot.product.pickupMode,
+    fulfillment_status: snapshot.product.pickupMode === "exhibition"
+      ? "reserved"
+      : "awaiting_pickup",
     pickup_date: snapshot.product.exhibitionEnd || "",
     cafe_name: snapshot.store.name,
     cafe_phone: snapshot.store.phone,
@@ -722,6 +748,8 @@ Deno.serve(async (request) => {
               p_payment_key: paymentKey,
             })
             if (confirmed.error) throw confirmed.error
+            const paid = Array.isArray(confirmed.data) ? confirmed.data[0] : confirmed.data
+            if (paid) await sendOrderPaidPush(paid)
           } else if (providerStatus === "CANCELED") {
             const cancellation = lastCancellation(verified)
             const cancelled = await admin.rpc("cancel_curit_order", {
@@ -1064,7 +1092,7 @@ Deno.serve(async (request) => {
       const items = projectIds.length
         ? await admin
             .from("project_items")
-            .select("id, project_id, name, price, stock, image_path, item_type")
+            .select("id, project_id, name, price, stock, image_path, pickup_mode")
             .in("project_id", projectIds)
             .eq("sale_mode", "display_sale")
         : { data: [], error: null }
@@ -1097,7 +1125,7 @@ Deno.serve(async (request) => {
             viewCount: 0,
             status: "PAUSED",
             pickupMode:
-              item.item_type === "artwork" ? "exhibition" : "immediate",
+              item.pickup_mode === "exhibition" ? "exhibition" : "immediate",
             qrUrl: "",
             issuable: true,
           })),
@@ -1148,7 +1176,7 @@ Deno.serve(async (request) => {
       const item = await admin
         .from("project_items")
         .select(
-          "id, project_id, name, description, item_type, sale_mode, price, stock, image_path, material",
+          "id, project_id, name, description, pickup_mode, sale_mode, price, stock, image_path, material",
         )
         .eq("id", projectItemId)
         .maybeSingle()
@@ -1246,7 +1274,7 @@ Deno.serve(async (request) => {
           composition: item.data.material || "",
           care: "작품별 안내와 매장 수령 조건을 확인해 주세요.",
           pickupMode:
-            item.data.item_type === "artwork" ? "exhibition" : "immediate",
+            item.data.pickup_mode === "exhibition" ? "exhibition" : "immediate",
           exhibitionEnd,
         },
       }
@@ -1485,12 +1513,6 @@ Deno.serve(async (request) => {
       if (order.error) throw order.error
       if (!order.data)
         return json(request, { message: "주문을 찾지 못했습니다." }, 404)
-      if (order.data.status === "cancelled")
-        return json(request, { id: order.data.id, status: "cancelled", duplicate: true })
-      if (order.data.status !== "paid")
-        return json(request, { message: "결제 완료 주문만 취소할 수 있습니다." }, 409)
-      if (order.data.fulfillment_status === "delivered")
-        return json(request, { message: "이미 전달한 상품은 앱에서 취소할 수 없습니다." }, 409)
       const listing = await admin
         .from("qr_listings")
         .select("collaboration_id")
@@ -1505,6 +1527,12 @@ Deno.serve(async (request) => {
       )
       if (!participant || participant.store.owner_id !== user.id)
         return json(request, { message: "매장 운영자만 결제를 취소할 수 있습니다." }, 403)
+      if (order.data.status === "cancelled")
+        return json(request, { id: order.data.id, status: "cancelled", duplicate: true })
+      if (order.data.status !== "paid")
+        return json(request, { message: "결제 완료 주문만 취소할 수 있습니다." }, 409)
+      if (order.data.fulfillment_status === "delivered")
+        return json(request, { message: "이미 전달한 상품은 앱에서 취소할 수 없습니다." }, 409)
       const settlement = await admin
         .from("settlement_entries")
         .select("status")
@@ -1940,11 +1968,7 @@ Deno.serve(async (request) => {
           { message: "결제 금액 또는 주문 상태가 일치하지 않습니다." },
           400,
         )
-      const tossPayment = await toss(
-        "/confirm",
-        { paymentKey, orderId, amount },
-        `confirm-${orderId}`,
-      )
+      const tossPayment = await approvedTossPayment(paymentKey, orderId, amount)
       if (tossPayment.status !== "DONE" ||
         tossPayment.orderId !== orderId ||
         tossPayment.paymentKey !== paymentKey ||

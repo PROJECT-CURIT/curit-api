@@ -252,12 +252,18 @@ export class PostgresStore implements CommerceStore {
       const rows = await transaction<OrderRow[]>`
         INSERT INTO qr_orders (
           id, listing_id, customer_name, customer_phone, customer_session_hash, quantity, amount,
-          status, simulated, payment_method, pickup_mode, pickup_date,
+          status, simulated, payment_method, pickup_mode, fulfillment_status, pickup_date,
           cafe_name, cafe_phone, snapshot, store_id, request_id, artwork_id, payment_provider
         ) VALUES (
           ${id}, ${listing.id}, ${input.customerName}, ${input.customerPhone}, ${input.customerSessionHash},
           ${input.quantity}, ${amount}, 'pending', ${input.simulated}, ${input.paymentMethod},
-          ${snapshot.product.pickupMode}, ${snapshot.product.exhibitionEnd}, ${snapshot.store.name},
+          ${snapshot.product.pickupMode},
+          ${
+            snapshot.product.pickupMode === "exhibition"
+              ? "reserved"
+              : "awaiting_pickup"
+          },
+          ${snapshot.product.exhibitionEnd}, ${snapshot.store.name},
           ${snapshot.store.phone}, ${this.sql.json(snapshot)}, ${snapshot.storeId},
           ${snapshot.requestId}, ${snapshot.product.artworkId}, ${
             input.simulated ? "demo" : "toss"
