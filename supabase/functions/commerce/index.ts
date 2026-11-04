@@ -1158,19 +1158,28 @@ Deno.serve(async (request) => {
             .eq("sale_mode", "display_sale")
         : { data: [], error: null }
       if (items.error) throw items.error
+      const agreements = collaborations.data?.length
+        ? await admin.from("collaboration_items")
+            .select("collaboration_id, project_item_id, quantity")
+            .in("collaboration_id", collaborations.data.map(row => row.id))
+            .eq("creator_confirmed", true)
+        : { data: [], error: null }
+      if (agreements.error) throw agreements.error
+      const confirmedSupply = new Map((agreements.data || []).map(row => [
+        `${row.collaboration_id}:${row.project_item_id}`, Number(row.quantity),
+      ]))
       const issued = new Set(
         (data || []).map(
           (row) => `${row.collaboration_id}:${row.project_item_id}`,
         ),
       )
       const candidates = (collaborations.data || []).flatMap((collaboration) =>
-        (items.data || [])
-          .filter(
-            (item) =>
-              item.project_id === collaboration.project_id &&
-              !issued.has(`${collaboration.id}:${item.id}`),
-          )
-          .map((item) => ({
+        (items.data || []).flatMap((item) => {
+          const key = `${collaboration.id}:${item.id}`
+          const supplyLimit = confirmedSupply.get(key)
+          if (item.project_id !== collaboration.project_id || issued.has(key) ||
+            !supplyLimit || Number(item.stock) < 1) return []
+          return [{
             id: `candidate-${collaboration.id}-${item.id}`,
             token: "",
             productItemId: item.id,
@@ -1182,14 +1191,16 @@ Deno.serve(async (request) => {
                   .data.publicUrl
               : "",
             price: Number(item.price),
-            stock: Number(item.stock),
+            stock: Math.min(Number(item.stock), supplyLimit),
+            supplyLimit,
             viewCount: 0,
             status: "PAUSED",
             pickupMode:
               item.pickup_mode === "exhibition" ? "exhibition" : "immediate",
             qrUrl: "",
             issuable: true,
-          })),
+          }]
+        }),
       )
       const activeCollaborationIds = new Set(
         (collaborations.data || []).filter(row => row.status === "active").map(row => row.id),
@@ -1285,6 +1296,8 @@ Deno.serve(async (request) => {
         return json(request, { message: "협업 채팅에서 크리에이터가 작품 수량을 확인한 뒤 QR을 발급해 주세요." }, 409)
       const supplyLimit = agreement.data.quantity
       const initialStock = Math.min(item.data.stock, supplyLimit)
+      if (initialStock < 1)
+        return json(request, { message: "재고가 있어야 구매 QR을 발급할 수 있어요." }, 409)
 
       const project = await admin
         .from("projects")
@@ -1372,6 +1385,9 @@ Deno.serve(async (request) => {
           "id, qr_token_value, token_hint, project_item_id, collaboration_id, sale_status, price, stock, view_count, snapshot",
         )
         .single()
+      if (inserted.error?.message === "COLLABORATION_SUPPLY_CHANGED" ||
+          inserted.error?.message === "COLLABORATION_INACTIVE")
+        return json(request, { message: "전시 상태나 작품 수량이 바뀌었어요. 협업 조건을 다시 확인해 주세요." }, 409)
       if (inserted.error) throw inserted.error
       return json(
         request,
