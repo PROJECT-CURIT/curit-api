@@ -155,7 +155,7 @@ async function participantCollaboration(
 ) {
   const collaboration = await admin
     .from("collaborations")
-    .select("id, project_id, store_id, creator_id, status, starts_on, ends_on")
+    .select("id, project_id, store_id, creator_id, status, starts_on, ends_on, terms")
     .eq("id", collaborationId)
     .maybeSingle()
   if (collaboration.error) throw collaboration.error
@@ -1161,7 +1161,7 @@ Deno.serve(async (request) => {
       if (error) throw error
       const collaborations = await admin
         .from("collaborations")
-        .select("id, project_id, status")
+        .select("id, project_id, status, terms")
         .in("id", collaborationIds)
         .in("status", ["approved", "active"])
       if (collaborations.error) throw collaborations.error
@@ -1193,7 +1193,9 @@ Deno.serve(async (request) => {
           (row) => `${row.collaboration_id}:${row.project_item_id}`,
         ),
       )
-      const candidates = (collaborations.data || []).flatMap((collaboration) =>
+      const candidates = (collaborations.data || [])
+        .filter(collaboration => collaboration.terms?.scheduleNeedsReview !== true)
+        .flatMap((collaboration) =>
         (items.data || []).flatMap((item) => {
           const key = `${collaboration.id}:${item.id}`
           const supplyLimit = confirmedSupply.get(key)
@@ -1305,6 +1307,8 @@ Deno.serve(async (request) => {
           request,
           managedListing(existing.data, participant.collaboration.status === "active"),
         )
+      if (participant.collaboration.terms?.scheduleNeedsReview === true)
+        return json(request, { message: "크리에이터가 변경된 전시 기간을 확인한 뒤 QR을 발급해 주세요." }, 409)
 
       const agreement = await admin.from("collaboration_items")
         .select("quantity, creator_confirmed")
@@ -1408,6 +1412,9 @@ Deno.serve(async (request) => {
       if (inserted.error?.message === "COLLABORATION_SUPPLY_CHANGED" ||
           inserted.error?.message === "COLLABORATION_INACTIVE")
         return json(request, { message: "전시 상태나 작품 수량이 바뀌었어요. 협업 조건을 다시 확인해 주세요." }, 409)
+      if (inserted.error?.message === "COLLABORATION_SCHEDULE_CHANGED" ||
+          inserted.error?.message === "COLLABORATION_SCHEDULE_UNCONFIRMED")
+        return json(request, { message: "전시 기간이 바뀌었어요. 협업 조건을 다시 확인해 주세요." }, 409)
       if (inserted.error) throw inserted.error
       return json(
         request,
