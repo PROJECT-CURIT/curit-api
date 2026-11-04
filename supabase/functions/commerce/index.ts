@@ -1232,10 +1232,10 @@ Deno.serve(async (request) => {
         .eq("project_item_id", projectItemId)
         .maybeSingle()
       if (agreement.error) throw agreement.error
-      if (agreement.data && !agreement.data.creator_confirmed)
-        return json(request, { message: "크리에이터가 작품 구성과 수량을 확인한 뒤 QR을 발급해 주세요." }, 409)
-      const supplyLimit = agreement.data?.quantity
-      const initialStock = supplyLimit === undefined ? item.data.stock : Math.min(item.data.stock, supplyLimit)
+      if (!agreement.data?.creator_confirmed)
+        return json(request, { message: "협업 채팅에서 크리에이터가 작품 수량을 확인한 뒤 QR을 발급해 주세요." }, 409)
+      const supplyLimit = agreement.data.quantity
+      const initialStock = Math.min(item.data.stock, supplyLimit)
 
       const project = await admin
         .from("projects")
@@ -1295,7 +1295,7 @@ Deno.serve(async (request) => {
           artist: creator.data.display_name,
           price: Number(item.data.price),
           stock: initialStock,
-          ...(supplyLimit === undefined ? {} : { supplyLimit }),
+          supplyLimit,
           image: imageUrl,
           description: item.data.description || "",
           composition: item.data.material || "",
