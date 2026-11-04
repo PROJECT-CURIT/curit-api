@@ -1353,10 +1353,8 @@ Deno.serve(async (request) => {
         storeId: participant.store.id,
         requestId: participant.collaboration.id,
         returnUrl: PUBLIC_WEB_URL,
-        saleStatus:
-          participant.collaboration.status === "active"
-            ? "active"
-            : "preparing",
+        saleStatus: "preparing",
+        requiresSaleReadiness: true,
         store: {
           name: participant.store.name,
           phone: "",
@@ -1456,6 +1454,7 @@ Deno.serve(async (request) => {
       const body = await request.json()
       const updates: Record<string, unknown> = {}
       const snapshot = listing.data.snapshot as Record<string, any>
+      const startingWithChecklist = body.saleStatus === "active" && snapshot.requiresSaleReadiness === true
       if (body.stock !== undefined) {
         const stock = body.stock
         if (typeof stock !== "number" || !Number.isSafeInteger(stock) || stock < 0 || stock > 100000)
@@ -1499,6 +1498,16 @@ Deno.serve(async (request) => {
             { message: "운영 중인 협업만 판매를 시작할 수 있습니다." },
             409,
           )
+        if (startingWithChecklist && body.readinessConfirmed !== true)
+          return json(
+            request,
+            { message: "상품 진열과 QR 판매 안내를 확인한 뒤 판매를 시작해 주세요." },
+            409,
+          )
+        if (startingWithChecklist && (
+          !Number.isSafeInteger(body.expectedStock) || body.expectedStock < 0 || body.stock !== undefined
+        ))
+          return json(request, { message: "수량을 먼저 저장하고 최신 재고를 확인해 주세요." }, 400)
         updates.sale_status = body.saleStatus
       }
       if (!Object.keys(updates).length)
@@ -1508,7 +1517,7 @@ Deno.serve(async (request) => {
         .from("qr_listings")
         .update(updates)
         .eq("id", listing.data.id)
-      if (body.stock !== undefined)
+      if (body.stock !== undefined || startingWithChecklist)
         query = query.eq("stock", body.expectedStock ?? listing.data.stock)
       const updated = await query
         .select(
